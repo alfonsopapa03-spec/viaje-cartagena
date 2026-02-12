@@ -16,7 +16,6 @@ st.set_page_config(
 # ==================== CREDENCIALES SUPABASE ====================
 SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
 
-
 # ==================== GESTOR DE BASE DE DATOS ====================
 class DatabaseManager:
     def __init__(self):
@@ -27,12 +26,12 @@ class DatabaseManager:
         return psycopg2.connect(self.db_url)
 
     def init_database(self):
-        """Crea las tablas y actualiza la estructura si es necesario"""
+        """Inicializa tablas y actualiza columnas si faltan"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
-            # 1. Tabla de Vehículos (Ahora con columna conductor)
+            # 1. Tabla Vehículos (con columna conductor)
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS tractomulas (
                     id SERIAL PRIMARY KEY,
@@ -42,15 +41,14 @@ class DatabaseManager:
                 )
             ''')
             
-            # --- MIGRACIÓN AUTOMÁTICA ---
-            # Intentamos agregar la columna 'conductor' si la tabla ya existía sin ella
+            # Migración: Asegurar que exista la columna conductor
             try:
                 cursor.execute("ALTER TABLE tractomulas ADD COLUMN IF NOT EXISTS conductor TEXT")
                 conn.commit()
-            except Exception:
-                conn.rollback() # Si falla o ya existe, seguimos
+            except:
+                conn.rollback()
 
-            # 2. Tabla de Operaciones
+            # 2. Tabla Operaciones
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS operaciones_cartagena (
                     id SERIAL PRIMARY KEY,
@@ -65,7 +63,7 @@ class DatabaseManager:
                     nombre_archivo TEXT
                 )
             ''')
-
+            
             # Indices
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_fecha ON operaciones_cartagena(fecha_operacion);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_placa ON operaciones_cartagena(placa);")
@@ -73,18 +71,16 @@ class DatabaseManager:
             conn.commit()
             conn.close()
         except Exception as e:
-            st.error(f"Error inicializando base de datos: {e}")
+            st.error(f"Error DB: {e}")
 
     # --- VEHÍCULOS ---
     def obtener_vehiculos_completo(self):
-        """Devuelve un DataFrame con placa y conductor predeterminado"""
         conn = self.get_connection()
         try:
-            # Traemos placa y conductor
-            df = pd.read_sql("SELECT placa, conductor FROM tractomulas ORDER BY placa", conn)
+            df = pd.read_sql("SELECT placa, conductor, tipo FROM tractomulas ORDER BY placa", conn)
             return df
         except:
-            return pd.DataFrame(columns=['placa', 'conductor'])
+            return pd.DataFrame()
         finally:
             conn.close()
 
@@ -92,7 +88,7 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            # Usamos ON CONFLICT para ACTUALIZAR el conductor si la placa ya existe
+            # Insertar o Actualizar si ya existe (Upsert)
             sql = """
                 INSERT INTO tractomulas (placa, tipo, conductor) 
                 VALUES (%s, %s, %s) 
@@ -103,8 +99,7 @@ class DatabaseManager:
             conn.commit()
             conn.close()
             return True
-        except Exception as e:
-            st.error(f"Error DB: {e}")
+        except:
             return False
 
     def eliminar_vehiculo(self, placa):
@@ -136,7 +131,7 @@ class DatabaseManager:
             conn.close()
             return True
         except Exception as e:
-            st.error(f"Error guardando operación: {e}")
+            st.error(f"Error guardando: {e}")
             return False
 
     def obtener_historial(self, fecha_inicio=None, fecha_fin=None, placa=None, conductor=None):
@@ -209,7 +204,7 @@ def procesar_imagen(uploaded_file):
         image.save(img_byte_arr, format='JPEG', quality=70)
         return img_byte_arr.getvalue()
     except Exception as e:
-        st.error(f"Error img: {e}")
+        st.error(f"Error imagen: {e}")
         return None
 
 # ==================== MAIN ====================
@@ -223,51 +218,55 @@ def main():
 
     tab1, tab2, tab3 = st.tabs(["📝 Nuevo Registro", "🔍 Historial y Trazabilidad", "🚛 Gestión Vehículos"])
 
-    # ---------------- TAB 1: REGISTRO ----------------
+    # ---------------- TAB 1: REGISTRO (AUTOCOMPLETADO) ----------------
     with tab1:
         st.markdown("### Registrar Movimiento")
         
-        with st.form("form_operacion", clear_on_submit=True):
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                fecha_op = st.date_input("Fecha de Operación", datetime.now())
-                
-                # Obtener vehículos y crear mapa de conductores
-                df_vehiculos = db.obtener_vehiculos_completo()
-                
-                if df_vehiculos.empty:
-                    st.warning("⚠️ Registra vehículos en la pestaña 3.")
-                    placas_list = []
-                    mapa_conductores = {}
-                else:
-                    placas_list = df_vehiculos['placa'].tolist()
-                    # Creamos un diccionario: {'ABC-123': 'Juan', 'XYZ-999': 'Pedro'}
-                    mapa_conductores = dict(zip(df_vehiculos['placa'], df_vehiculos['conductor']))
+        # 1. Cargar datos de vehículos
+        df_vehiculos = db.obtener_vehiculos_completo()
+        
+        # 2. Crear lista y diccionario
+        lista_placas = []
+        mapa_conductores = {}
+        
+        if not df_vehiculos.empty:
+            lista_placas = df_vehiculos['placa'].tolist()
+            # Llenamos el mapa { 'AAA123': 'Juan Perez' }
+            mapa_conductores = {
+                row['placa']: (row['conductor'] if row['conductor'] else "")
+                for index, row in df_vehiculos.iterrows()
+            }
 
-                # Selector de placa
-                placa_selec = st.selectbox("Placa / Unidad", placas_list if placas_list else [""])
-                
-                # Autocompletar conductor basado en la placa seleccionada
-                conductor_defecto = ""
-                if placa_selec in mapa_conductores and mapa_conductores[placa_selec]:
-                    conductor_defecto = mapa_conductores[placa_selec]
-
-                conductor = st.text_input("Conductor Asignado", value=conductor_defecto)
-
-            with col2:
-                sacos = st.number_input("Cantidad de Sacos", min_value=0, step=1)
-                toneladas = st.number_input("Total Toneladas", min_value=0.0, step=0.1, format="%.2f")
-                
-            descripcion = st.text_area("Descripción / Observaciones")
+        # 3. Formulario Interactivo (Sin st.form para permitir reactividad)
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            fecha_op = st.date_input("Fecha de Operación", datetime.now())
             
-            st.markdown("#### 📸 Evidencia")
-            archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'])
+            # AL SELECCIONAR LA PLACA...
+            placa_selec = st.selectbox("Placa / Unidad", lista_placas if lista_placas else [""])
             
-            if st.form_submit_button("💾 Guardar Registro", type="primary"):
-                if not placa_selec or sacos <= 0 or toneladas <= 0:
-                    st.error("⚠️ Faltan datos (Placa, Sacos o Toneladas).")
-                else:
+            # ...CALCULAMOS EL CONDUCTOR AUTOMÁTICAMENTE
+            conductor_auto = mapa_conductores.get(placa_selec, "")
+            
+            # ...Y LO PONEMOS EN EL INPUT
+            conductor = st.text_input("Conductor Asignado", value=conductor_auto)
+
+        with col2:
+            sacos = st.number_input("Cantidad de Sacos", min_value=0, step=1)
+            toneladas = st.number_input("Total Toneladas", min_value=0.0, step=0.1, format="%.2f")
+            
+        descripcion = st.text_area("Descripción / Observaciones")
+        
+        st.markdown("#### 📸 Evidencia")
+        archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'])
+        
+        # Botón de Guardado
+        if st.button("💾 Guardar Registro", type="primary"):
+            if not placa_selec or sacos <= 0 or toneladas <= 0:
+                st.error("⚠️ Faltan datos (Placa, Sacos o Toneladas).")
+            else:
+                with st.spinner("Guardando..."):
                     img_bytes = None
                     fname = None
                     if archivo_foto:
@@ -275,9 +274,10 @@ def main():
                         fname = archivo_foto.name
                     
                     if db.guardar_operacion(fecha_op, placa_selec, conductor, descripcion, sacos, toneladas, img_bytes, fname):
-                        st.success(f"✅ Guardado: {placa_selec} - {conductor}")
+                        st.success(f"✅ Operación Guardada: {placa_selec} ({toneladas} ton) - {conductor}")
+                        # Pequeño truco para limpiar campos si es necesario, o simplemente mostrar éxito
                     else:
-                        st.error("Error al guardar.")
+                        st.error("Error al guardar en base de datos.")
 
     # ---------------- TAB 2: HISTORIAL ----------------
     with tab2:
@@ -287,9 +287,10 @@ def main():
             with c1: f_ini = st.date_input("Inicio", datetime.now() - timedelta(days=15))
             with c2: f_fin = st.date_input("Fin", datetime.now())
             with c3: 
+                # Recargar placas para el filtro
                 df_v = db.obtener_vehiculos_completo()
-                lista_p = ["Todas"] + df_v['placa'].tolist() if not df_v.empty else ["Todas"]
-                f_pla = st.selectbox("Placa", lista_p)
+                l_placas = ["Todas"] + df_v['placa'].tolist() if not df_v.empty else ["Todas"]
+                f_pla = st.selectbox("Filtrar Placa", l_placas)
             with c4: f_con = st.text_input("Buscar Conductor")
 
         df = db.obtener_historial(f_ini, f_fin, f_pla, f_con)
@@ -302,9 +303,10 @@ def main():
             
             st.dataframe(df[['fecha_operacion', 'placa', 'conductor', 'descripcion', 'cantidad_sacos', 'toneladas']], use_container_width=True, hide_index=True)
             
-            st.subheader("🖼️ Ver Foto")
+            st.subheader("🖼️ Ver Foto y Eliminar")
             df['ver'] = df.apply(lambda x: f"ID {x['id']} | {x['fecha_operacion']} | {x['placa']}", axis=1)
             sel = st.selectbox("Seleccionar viaje:", df['ver'].tolist())
+            
             if sel:
                 id_s = int(sel.split(" | ")[0].replace("ID ", ""))
                 row = df[df['id'] == id_s].iloc[0]
@@ -317,7 +319,9 @@ def main():
                 with c_dat:
                     st.success(f"Placa: {row['placa']}")
                     st.info(f"Conductor: {row['conductor']}")
-                    if st.button("🗑️ Eliminar", key=f"d{id_s}"):
+                    st.write(f"Sacos: {row['cantidad_sacos']}")
+                    st.write(f"Notas: {row['descripcion']}")
+                    if st.button("🗑️ Eliminar este registro", key=f"d{id_s}"):
                         db.eliminar_registro(id_s)
                         st.rerun()
         else:
@@ -326,7 +330,7 @@ def main():
     # ---------------- TAB 3: VEHÍCULOS ----------------
     with tab3:
         st.subheader("🚛 Configuración de Flota")
-        st.info("Asigna un conductor a cada placa para que se cargue automáticamente.")
+        st.info("Aquí defines qué conductor maneja cada placa por defecto.")
         
         c1, c2 = st.columns([1, 2])
         
@@ -339,7 +343,7 @@ def main():
                 if st.form_submit_button("Guardar / Actualizar"):
                     if p_new:
                         if db.guardar_vehiculo(p_new, p_tip, p_con):
-                            st.success(f"✅ {p_new} asignada a {p_con}")
+                            st.success(f"✅ {p_new} actualizada con conductor {p_con}")
                             st.rerun()
         
         with c2:
@@ -348,7 +352,6 @@ def main():
             if not df_v.empty:
                 st.dataframe(df_v, use_container_width=True, hide_index=True)
                 
-                # Borrado simple por input
                 p_del = st.selectbox("Seleccionar para eliminar:", df_v['placa'].tolist())
                 if st.button("🗑️ Eliminar Vehículo"):
                     db.eliminar_vehiculo(p_del)

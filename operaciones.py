@@ -15,7 +15,7 @@ st.set_page_config(
 )
 
 # ==================== CREDENCIALES SUPABASE ====================
-SUPABASE_DB_URL = "postgresql://postgres.verwlkgitpllyneqxlao:Conejito800$@aws-0-us-west-2.pooler.supabase.com:6543/postgres?sslmode=require"
+SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
 
 # ==================== GESTOR DE BASE DE DATOS ====================
 class DatabaseManager:
@@ -418,3 +418,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

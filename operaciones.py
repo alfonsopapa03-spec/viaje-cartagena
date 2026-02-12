@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 import pandas as pd
 from PIL import Image
 import io
+import plotly.express as px  # NUEVA LIBRERÍA PARA GRÁFICOS
 
 # ==================== CONFIGURACIÓN DE PÁGINA ====================
 st.set_page_config(
@@ -14,7 +15,7 @@ st.set_page_config(
 )
 
 # ==================== CREDENCIALES SUPABASE ====================
-SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
+SUPABASE_DB_URL = "postgresql://postgres.verwlkgitpllyneqxlao:Conejito800$@aws-0-us-west-2.pooler.supabase.com:6543/postgres?sslmode=require"
 
 # ==================== GESTOR DE BASE DE DATOS ====================
 class DatabaseManager:
@@ -31,7 +32,7 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
 
-            # 1. Tabla Vehículos (con columna conductor)
+            # 1. Tabla Vehículos
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS tractomulas (
                     id SERIAL PRIMARY KEY,
@@ -40,8 +41,6 @@ class DatabaseManager:
                     conductor TEXT
                 )
             ''')
-            
-            # Migración: Asegurar que exista la columna conductor
             try:
                 cursor.execute("ALTER TABLE tractomulas ADD COLUMN IF NOT EXISTS conductor TEXT")
                 conn.commit()
@@ -64,7 +63,6 @@ class DatabaseManager:
                 )
             ''')
             
-            # Indices
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_fecha ON operaciones_cartagena(fecha_operacion);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_placa ON operaciones_cartagena(placa);")
 
@@ -72,6 +70,23 @@ class DatabaseManager:
             conn.close()
         except Exception as e:
             st.error(f"Error DB: {e}")
+
+    # --- DATOS GENERALES PARA DASHBOARD ---
+    def obtener_datos_dashboard(self, fecha_inicio, fecha_fin):
+        conn = self.get_connection()
+        query = """
+            SELECT fecha_operacion, placa, conductor, cantidad_sacos, toneladas 
+            FROM operaciones_cartagena 
+            WHERE fecha_operacion BETWEEN %s AND %s
+            ORDER BY fecha_operacion ASC
+        """
+        try:
+            df = pd.read_sql(query, conn, params=(fecha_inicio, fecha_fin))
+            return df
+        except:
+            return pd.DataFrame()
+        finally:
+            conn.close()
 
     # --- VEHÍCULOS ---
     def obtener_vehiculos_completo(self):
@@ -88,7 +103,6 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            # Insertar o Actualizar si ya existe (Upsert)
             sql = """
                 INSERT INTO tractomulas (placa, tipo, conductor) 
                 VALUES (%s, %s, %s) 
@@ -209,59 +223,114 @@ def procesar_imagen(uploaded_file):
 
 # ==================== MAIN ====================
 def main():
-    st.title("🚛 Operaciones Cartagena - Día a Día")
+    st.title("🚛 Operaciones Cartagena")
     
     if 'db' not in st.session_state:
         st.session_state.db = DatabaseManager()
     
     db = st.session_state.db
 
-    tab1, tab2, tab3 = st.tabs(["📝 Nuevo Registro", "🔍 Historial y Trazabilidad", "🚛 Gestión Vehículos"])
+    # DEFINICIÓN DE PESTAÑAS (Ahora el Dashboard es la primera)
+    tab0, tab1, tab2, tab3 = st.tabs(["📊 Dashboard Gerencial", "📝 Nuevo Registro", "🔍 Historial Detallado", "🚛 Gestión Vehículos"])
 
-    # ---------------- TAB 1: REGISTRO (AUTOCOMPLETADO) ----------------
+    # ---------------- TAB 0: DASHBOARD ----------------
+    with tab0:
+        st.markdown("### 📈 Resumen de Operaciones")
+        
+        # Filtro de fecha para el dashboard
+        col_filtro1, col_filtro2 = st.columns([1, 4])
+        with col_filtro1:
+            mes_actual = datetime.now()
+            inicio_mes = mes_actual.replace(day=1)
+            rango_fechas = st.date_input(
+                "Rango de Análisis",
+                value=(inicio_mes, mes_actual),
+                key="dash_dates"
+            )
+        
+        # Validar que sea un rango
+        if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
+            f_start, f_end = rango_fechas
+            df_dash = db.obtener_datos_dashboard(f_start, f_end)
+            
+            if not df_dash.empty:
+                # --- KPI CARDS ---
+                total_ton = df_dash['toneladas'].sum()
+                total_sacos = df_dash['cantidad_sacos'].sum()
+                total_viajes = len(df_dash)
+                
+                k1, k2, k3 = st.columns(3)
+                k1.metric("⚖️ Toneladas Movidas", f"{total_ton:,.2f}", delta="Total Periodo")
+                k2.metric("📦 Sacos Movidos", f"{int(total_sacos):,}".replace(",", "."), delta="Total Periodo")
+                k3.metric("🚚 Viajes Realizados", total_viajes, delta="Despachos")
+                
+                st.divider()
+                
+                # --- GRÁFICOS ---
+                c_chart1, c_chart2 = st.columns(2)
+                
+                with c_chart1:
+                    st.subheader("🚛 Toneladas por Vehículo")
+                    # Agrupar por placa
+                    df_placa = df_dash.groupby("placa")['toneladas'].sum().reset_index().sort_values('toneladas', ascending=True)
+                    fig_placa = px.bar(df_placa, x='toneladas', y='placa', orientation='h', text_auto='.2s', color='toneladas')
+                    st.plotly_chart(fig_placa, use_container_width=True)
+
+                with c_chart2:
+                    st.subheader("📆 Evolución Diaria")
+                    # Agrupar por fecha
+                    df_dia = df_dash.groupby("fecha_operacion")['toneladas'].sum().reset_index()
+                    fig_dia = px.line(df_dia, x='fecha_operacion', y='toneladas', markers=True, title="Toneladas por Día")
+                    st.plotly_chart(fig_dia, use_container_width=True)
+                
+                # --- PIE CHART CONDUCTORES ---
+                st.subheader("👤 Participación por Conductor")
+                df_cond = df_dash.groupby("conductor")['toneladas'].sum().reset_index()
+                fig_cond = px.pie(df_cond, values='toneladas', names='conductor', hole=0.4)
+                st.plotly_chart(fig_cond, use_container_width=True)
+
+            else:
+                st.info("No hay datos registrados en este rango de fechas.")
+        else:
+            st.info("Selecciona una fecha de inicio y fin para ver el reporte.")
+
+    # ---------------- TAB 1: REGISTRO ----------------
     with tab1:
         st.markdown("### Registrar Movimiento")
         
-        # 1. Cargar datos de vehículos
         df_vehiculos = db.obtener_vehiculos_completo()
         
-        # 2. Crear lista y diccionario
         lista_placas = []
         mapa_conductores = {}
         
         if not df_vehiculos.empty:
             lista_placas = df_vehiculos['placa'].tolist()
-            # Llenamos el mapa { 'AAA123': 'Juan Perez' }
             mapa_conductores = {
                 row['placa']: (row['conductor'] if row['conductor'] else "")
                 for index, row in df_vehiculos.iterrows()
             }
 
-        # 3. Formulario Interactivo (Sin st.form para permitir reactividad)
         col1, col2 = st.columns(2)
         
         with col1:
-            fecha_op = st.date_input("Fecha de Operación", datetime.now())
+            fecha_op = st.date_input("Fecha de Operación", datetime.now(), key="reg_fecha")
+            placa_selec = st.selectbox("Placa / Unidad", lista_placas if lista_placas else [""], key="reg_placa")
             
-            # AL SELECCIONAR LA PLACA...
-            placa_selec = st.selectbox("Placa / Unidad", lista_placas if lista_placas else [""])
-            
-            # ...CALCULAMOS EL CONDUCTOR AUTOMÁTICAMENTE
+            # Autocompletado manual en el input
             conductor_auto = mapa_conductores.get(placa_selec, "")
             
-            # ...Y LO PONEMOS EN EL INPUT
-            conductor = st.text_input("Conductor Asignado", value=conductor_auto)
+            # Usamos key para manejar el estado si es necesario, pero el value lo llena
+            conductor = st.text_input("Conductor Asignado", value=conductor_auto, key="reg_cond")
 
         with col2:
-            sacos = st.number_input("Cantidad de Sacos", min_value=0, step=1)
-            toneladas = st.number_input("Total Toneladas", min_value=0.0, step=0.1, format="%.2f")
+            sacos = st.number_input("Cantidad de Sacos", min_value=0, step=1, key="reg_sacos")
+            toneladas = st.number_input("Total Toneladas", min_value=0.0, step=0.1, format="%.2f", key="reg_ton")
             
-        descripcion = st.text_area("Descripción / Observaciones")
+        descripcion = st.text_area("Descripción / Observaciones", key="reg_desc")
         
         st.markdown("#### 📸 Evidencia")
-        archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'])
+        archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'], key="reg_file")
         
-        # Botón de Guardado
         if st.button("💾 Guardar Registro", type="primary"):
             if not placa_selec or sacos <= 0 or toneladas <= 0:
                 st.error("⚠️ Faltan datos (Placa, Sacos o Toneladas).")
@@ -274,38 +343,31 @@ def main():
                         fname = archivo_foto.name
                     
                     if db.guardar_operacion(fecha_op, placa_selec, conductor, descripcion, sacos, toneladas, img_bytes, fname):
-                        st.success(f"✅ Operación Guardada: {placa_selec} ({toneladas} ton) - {conductor}")
-                        # Pequeño truco para limpiar campos si es necesario, o simplemente mostrar éxito
+                        st.success(f"✅ Operación Guardada: {placa_selec} ({toneladas} ton)")
                     else:
                         st.error("Error al guardar en base de datos.")
 
     # ---------------- TAB 2: HISTORIAL ----------------
     with tab2:
-        st.markdown("### 🔍 Trazabilidad")
+        st.markdown("### 🔍 Historial Detallado")
         with st.expander("🛠️ Filtros", expanded=True):
             c1, c2, c3, c4 = st.columns(4)
-            with c1: f_ini = st.date_input("Inicio", datetime.now() - timedelta(days=15))
-            with c2: f_fin = st.date_input("Fin", datetime.now())
+            with c1: f_ini = st.date_input("Inicio", datetime.now() - timedelta(days=15), key="hist_ini")
+            with c2: f_fin = st.date_input("Fin", datetime.now(), key="hist_fin")
             with c3: 
-                # Recargar placas para el filtro
                 df_v = db.obtener_vehiculos_completo()
                 l_placas = ["Todas"] + df_v['placa'].tolist() if not df_v.empty else ["Todas"]
-                f_pla = st.selectbox("Filtrar Placa", l_placas)
-            with c4: f_con = st.text_input("Buscar Conductor")
+                f_pla = st.selectbox("Filtrar Placa", l_placas, key="hist_placa")
+            with c4: f_con = st.text_input("Buscar Conductor", key="hist_cond")
 
         df = db.obtener_historial(f_ini, f_fin, f_pla, f_con)
         
         if not df.empty:
-            m1, m2, m3 = st.columns(3)
-            m1.metric("📦 Sacos", f"{int(df['cantidad_sacos'].sum()):,}".replace(",", "."))
-            m2.metric("⚖️ Toneladas", f"{df['toneladas'].sum():,.2f}")
-            m3.metric("🚚 Viajes", len(df))
-            
             st.dataframe(df[['fecha_operacion', 'placa', 'conductor', 'descripcion', 'cantidad_sacos', 'toneladas']], use_container_width=True, hide_index=True)
             
             st.subheader("🖼️ Ver Foto y Eliminar")
             df['ver'] = df.apply(lambda x: f"ID {x['id']} | {x['fecha_operacion']} | {x['placa']}", axis=1)
-            sel = st.selectbox("Seleccionar viaje:", df['ver'].tolist())
+            sel = st.selectbox("Seleccionar viaje:", df['ver'].tolist(), key="hist_sel")
             
             if sel:
                 id_s = int(sel.split(" | ")[0].replace("ID ", ""))
@@ -321,7 +383,7 @@ def main():
                     st.info(f"Conductor: {row['conductor']}")
                     st.write(f"Sacos: {row['cantidad_sacos']}")
                     st.write(f"Notas: {row['descripcion']}")
-                    if st.button("🗑️ Eliminar este registro", key=f"d{id_s}"):
+                    if st.button("🗑️ Eliminar este registro", key=f"del_{id_s}"):
                         db.eliminar_registro(id_s)
                         st.rerun()
         else:
@@ -330,7 +392,6 @@ def main():
     # ---------------- TAB 3: VEHÍCULOS ----------------
     with tab3:
         st.subheader("🚛 Configuración de Flota")
-        st.info("Aquí defines qué conductor maneja cada placa por defecto.")
         
         c1, c2 = st.columns([1, 2])
         
@@ -343,16 +404,14 @@ def main():
                 if st.form_submit_button("Guardar / Actualizar"):
                     if p_new:
                         if db.guardar_vehiculo(p_new, p_tip, p_con):
-                            st.success(f"✅ {p_new} actualizada con conductor {p_con}")
+                            st.success(f"✅ {p_new} Guardada")
                             st.rerun()
         
         with c2:
-            st.markdown("#### Lista de Unidades")
             df_v = db.obtener_vehiculos_completo()
             if not df_v.empty:
                 st.dataframe(df_v, use_container_width=True, hide_index=True)
-                
-                p_del = st.selectbox("Seleccionar para eliminar:", df_v['placa'].tolist())
+                p_del = st.selectbox("Seleccionar para eliminar:", df_v['placa'].tolist(), key="veh_del")
                 if st.button("🗑️ Eliminar Vehículo"):
                     db.eliminar_vehiculo(p_del)
                     st.rerun()

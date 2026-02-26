@@ -282,6 +282,26 @@ class DatabaseManager:
 
 
 # ==================== UTILIDADES ====================
+def procesar_imagen(uploaded_file):
+    if uploaded_file is None:
+        return None
+    try:
+        image = Image.open(uploaded_file)
+        if image.mode in ("RGBA", "P"):
+            image = image.convert("RGB")
+        max_width = 1024
+        if image.width > max_width:
+            ratio = max_width / image.width
+            new_height = int(image.height * ratio)
+            image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='JPEG', quality=70)
+        return img_byte_arr.getvalue()
+    except Exception as e:
+        st.error(f"Error imagen: {e}")
+        return None
+
+
 def parse_cantidad(texto: str) -> float:
     """
     Convierte texto de cantidad en formato colombiano o internacional a float.

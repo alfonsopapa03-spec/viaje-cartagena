@@ -765,14 +765,35 @@ def main():
                         unidad_idx = UNIDADES_MEDIDA.index(unidad_actual) if unidad_actual in UNIDADES_MEDIDA else 0
                         unidad_edit = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, index=unidad_idx, key=f"e_unidad_{id_s}")
 
-                        # Mostrar cantidad según unidad actual almacenada
-                        factor = CONVERSION_A_TONELADAS.get(unidad_actual)
-                        val_cantidad = float(row['toneladas']) if (factor and row['toneladas']) else float(row['cantidad_sacos'] or 0)
+                        # Valor inicial de cantidad para el campo de edición
+                        try:
+                            unidad_actual = str(row.get('unidad_medida') or 'Toneladas (t)')
+                            factor = CONVERSION_A_TONELADAS.get(unidad_actual)
+                            ton_val = row['toneladas']
+                            sac_val = row['cantidad_sacos']
+                            if factor and ton_val and not pd.isna(ton_val):
+                                val_cantidad = float(ton_val)
+                            elif sac_val and not pd.isna(sac_val):
+                                val_cantidad = float(sac_val)
+                            else:
+                                val_cantidad = 0.0
+                        except:
+                            val_cantidad = 0.0
+
+                        # Usar cantidad_texto guardada si existe
+                        cant_texto_guardado = str(row.get('cantidad_texto') or '') if 'cantidad_texto' in row.index else ''
+
                         key_cant = f"e_cant_{id_s}"
                         if key_cant not in st.session_state:
-                            st.session_state[key_cant] = str(int(val_cantidad) if val_cantidad == int(val_cantidad) else val_cantidad)
+                            st.session_state[key_cant] = cant_texto_guardado if cant_texto_guardado else str(int(val_cantidad) if val_cantidad == int(val_cantidad) else val_cantidad)
+
                         cantidad_str_edit = st.text_input(f"Cantidad ({unidad_edit})", key=key_cant, placeholder="Ej: 28.910,00")
-                        cantidad_edit = parse_cantidad(cantidad_str_edit) if cantidad_str_edit.strip() else val_cantidad
+
+                        try:
+                            cantidad_edit = parse_cantidad(cantidad_str_edit) if cantidad_str_edit.strip() else val_cantidad
+                            cantidad_edit = float(cantidad_edit)
+                        except:
+                            cantidad_edit = val_cantidad
                         sacos_edit = st.number_input("Sacos (opcional)", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
                         desc_edit = st.text_area("Descripción", value=row['descripcion'] or "", key=f"e_desc_{id_s}")
 

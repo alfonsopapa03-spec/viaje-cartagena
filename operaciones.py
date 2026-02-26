@@ -219,25 +219,6 @@ class DatabaseManager:
         except Exception as e:
             st.error(f"Error actualizando: {e}")
             return False
-        """Actualiza un registro existente sin tocar la imagen"""
-        try:
-            factor = CONVERSION_A_TONELADAS.get(unidad_medida)
-            toneladas = round(cantidad * factor, 4) if factor else None
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            sql = '''
-                UPDATE operaciones_cartagena
-                SET fecha_operacion=%s, placa=%s, conductor=%s, tipo_carga=%s, unidad_medida=%s,
-                    descripcion=%s, cantidad_sacos=%s, toneladas=%s
-                WHERE id=%s
-            '''
-            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, registro_id))
-            conn.commit()
-            conn.close()
-            return True
-        except Exception as e:
-            st.error(f"Error actualizando: {e}")
-            return False
 
     def obtener_historial(self, fecha_inicio=None, fecha_fin=None, placa=None, conductor=None, tipo_carga=None):
         conn = self.get_connection()

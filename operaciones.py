@@ -109,8 +109,11 @@ class DatabaseManager:
                 try:
                     cursor.execute(col_sql)
                     conn.commit()
-                except:
-                    conn.rollback()
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_fecha ON operaciones_cartagena(fecha_operacion);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_placa ON operaciones_cartagena(placa);")
@@ -625,6 +628,12 @@ def main():
             st.divider()
 
             # --- TABLA ---
+            # Asegurar columnas opcionales aunque no existan en BD
+            if 'tipo_carga' not in df.columns:
+                df['tipo_carga'] = ''
+            if 'unidad_medida' not in df.columns:
+                df['unidad_medida'] = 'Toneladas (t)'
+
             st.dataframe(
                 df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'unidad_medida', 'cantidad_sacos', 'toneladas', 'descripcion']],
                 use_container_width=True,

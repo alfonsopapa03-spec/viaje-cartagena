@@ -183,6 +183,8 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
+            cantidad = float(cantidad) if cantidad else 0.0
+            sacos = int(sacos) if sacos else 0
             factor = CONVERSION_A_TONELADAS.get(unidad_medida)
             toneladas = round(cantidad * factor, 4) if factor else None
             sql = '''
@@ -202,6 +204,8 @@ class DatabaseManager:
 
     def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, cantidad_texto):
         try:
+            cantidad = float(cantidad) if cantidad else 0.0
+            sacos = int(sacos) if sacos else 0
             factor = CONVERSION_A_TONELADAS.get(unidad_medida)
             toneladas = round(cantidad * factor, 4) if factor else None
             conn = self.get_connection()

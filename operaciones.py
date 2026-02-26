@@ -96,6 +96,7 @@ class DatabaseManager:
                     descripcion TEXT,
                     cantidad_sacos INTEGER,
                     toneladas REAL,
+                    cantidad_texto TEXT,
                     imagen_comprobante BYTEA,
                     nombre_archivo TEXT
                 )
@@ -105,6 +106,7 @@ class DatabaseManager:
             for col_sql in [
                 "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS tipo_carga TEXT",
                 "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS unidad_medida TEXT DEFAULT 'Toneladas (t)'",
+                "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS cantidad_texto TEXT",
             ]:
                 try:
                     cursor.execute(col_sql)
@@ -177,22 +179,20 @@ class DatabaseManager:
         except:
             return False
 
-    def guardar_operacion(self, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, imagen_bytes, nombre_archivo):
+    def guardar_operacion(self, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, cantidad_texto, imagen_bytes, nombre_archivo):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            # Calcular toneladas si la unidad es convertible
             factor = CONVERSION_A_TONELADAS.get(unidad_medida)
             toneladas = round(cantidad * factor, 4) if factor else None
-
             sql = '''
                 INSERT INTO operaciones_cartagena
-                (fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion, cantidad_sacos, toneladas, imagen_comprobante, nombre_archivo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion, cantidad_sacos, toneladas, cantidad_texto, imagen_comprobante, nombre_archivo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             '''
             if imagen_bytes:
                 imagen_bytes = psycopg2.Binary(imagen_bytes)
-            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo))
+            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, cantidad_texto, imagen_bytes, nombre_archivo))
             conn.commit()
             conn.close()
             return True
@@ -200,7 +200,25 @@ class DatabaseManager:
             st.error(f"Error guardando: {e}")
             return False
 
-    def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad):
+    def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, cantidad_texto):
+        try:
+            factor = CONVERSION_A_TONELADAS.get(unidad_medida)
+            toneladas = round(cantidad * factor, 4) if factor else None
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            sql = '''
+                UPDATE operaciones_cartagena
+                SET fecha_operacion=%s, placa=%s, conductor=%s, tipo_carga=%s, unidad_medida=%s,
+                    descripcion=%s, cantidad_sacos=%s, toneladas=%s, cantidad_texto=%s
+                WHERE id=%s
+            '''
+            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, cantidad_texto, registro_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error actualizando: {e}")
+            return False
         """Actualiza un registro existente sin tocar la imagen"""
         try:
             factor = CONVERSION_A_TONELADAS.get(unidad_medida)
@@ -225,7 +243,7 @@ class DatabaseManager:
         conn = self.get_connection()
         query = """
             SELECT id, fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion,
-                   cantidad_sacos, toneladas, nombre_archivo
+                   cantidad_sacos, toneladas, cantidad_texto, nombre_archivo
             FROM operaciones_cartagena
             WHERE 1=1
         """
@@ -279,7 +297,57 @@ class DatabaseManager:
 
 
 # ==================== UTILIDADES ====================
-def procesar_imagen(uploaded_file):
+def parse_cantidad(texto: str) -> float:
+    """
+    Convierte texto de cantidad en formato colombiano o internacional a float.
+    Ejemplos válidos:
+      28.910,00  → 28910.0
+      28,910.00  → 28910.0
+      28900      → 28900.0
+      1.500      → 1500.0
+      1,5        → 1.5
+    """
+    texto = str(texto).strip().replace(" ", "")
+    if not texto or texto == "0":
+        return 0.0
+
+    tiene_punto = "." in texto
+    tiene_coma = "," in texto
+
+    if tiene_punto and tiene_coma:
+        # Determinar cuál es separador de miles y cuál decimal
+        pos_punto = texto.rfind(".")
+        pos_coma = texto.rfind(",")
+        if pos_coma > pos_punto:
+            # Formato colombiano: 28.910,00
+            texto = texto.replace(".", "").replace(",", ".")
+        else:
+            # Formato inglés: 28,910.00
+            texto = texto.replace(",", "")
+    elif tiene_coma:
+        partes = texto.split(",")
+        if len(partes) == 2 and len(partes[1]) <= 2:
+            # Es decimal: 28,90 → 28.90
+            texto = texto.replace(",", ".")
+        else:
+            # Es separador de miles: 28,900 → 28900
+            texto = texto.replace(",", "")
+    elif tiene_punto:
+        partes = texto.split(".")
+        if len(partes) == 2 and len(partes[1]) <= 2:
+            # Es decimal: 28.90
+            pass
+        else:
+            # Es separador de miles: 28.900 → 28900
+            texto = texto.replace(".", "")
+
+    try:
+        return float(texto)
+    except ValueError:
+        return 0.0
+
+
+
     if uploaded_file is None:
         return None
     try:
@@ -353,9 +421,10 @@ def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> byte
         "placa": "Placa",
         "conductor": "Conductor",
         "tipo_carga": "Tipo de Carga",
-        "descripcion": "Descripción",
-        "cantidad_sacos": "Sacos",
+        "cantidad_texto": "Cantidad",
+        "unidad_medida": "Unidad",
         "toneladas": "Toneladas",
+        "descripcion": "Descripción",
     }
 
     col_keys = [k for k in columnas.keys() if k in df.columns]
@@ -411,7 +480,9 @@ def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> byte
         cell_ton.fill = fill_total
         cell_ton.border = border_thin
         cell_ton.alignment = align_center
-        ws.cell(row=total_row, column=ton_col).number_format = '#,##0.00'
+        # Formato número colombiano para toda la columna toneladas
+        for r in range(header_row + 1, total_row + 1):
+            ws.cell(r, ton_col).number_format = '#,##0.00'
 
     # --- ANCHO DE COLUMNAS ---
     anchos = {
@@ -419,9 +490,10 @@ def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> byte
         "placa": 12,
         "conductor": 22,
         "tipo_carga": 22,
+        "cantidad_texto": 16,
+        "unidad_medida": 18,
+        "toneladas": 14,
         "descripcion": 35,
-        "cantidad_sacos": 10,
-        "toneladas": 12,
     }
     for col_idx, key in enumerate(col_keys, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = anchos.get(key, 15)
@@ -565,7 +637,8 @@ def main():
         with col2:
             tipo_carga = st.selectbox("Tipo de Carga", TIPOS_CARGA, key="reg_tipo")
             unidad = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, key="reg_unidad")
-            cantidad = st.number_input(f"Cantidad ({unidad})", min_value=0.0, step=1.0, format="%.4g", key="reg_cantidad")
+            cantidad_str = st.text_input(f"Cantidad ({unidad})", key="reg_cantidad", placeholder="Ej: 28.910,00")
+            cantidad = parse_cantidad(cantidad_str) if cantidad_str.strip() else 0.0
             sacos = st.number_input("Cantidad de Sacos (opcional)", min_value=0, step=1, key="reg_sacos")
 
         descripcion = st.text_area("Descripción / Observaciones", key="reg_desc")
@@ -584,8 +657,8 @@ def main():
                         img_bytes = procesar_imagen(archivo_foto)
                         fname = archivo_foto.name
 
-                    if db.guardar_operacion(fecha_op, placa_selec, conductor, tipo_carga, unidad, descripcion, sacos, cantidad, img_bytes, fname):
-                        st.success(f"✅ Operación Guardada: {placa_selec} | {tipo_carga} | {cantidad} {unidad}")
+                    if db.guardar_operacion(fecha_op, placa_selec, conductor, tipo_carga, unidad, descripcion, sacos, cantidad, cantidad_str, img_bytes, fname):
+                        st.success(f"✅ Operación Guardada: {placa_selec} | {tipo_carga} | {cantidad_str} {unidad}")
                     else:
                         st.error("Error al guardar en base de datos.")
 
@@ -628,14 +701,15 @@ def main():
             st.divider()
 
             # --- TABLA ---
-            # Asegurar columnas opcionales aunque no existan en BD
             if 'tipo_carga' not in df.columns:
                 df['tipo_carga'] = ''
             if 'unidad_medida' not in df.columns:
                 df['unidad_medida'] = 'Toneladas (t)'
+            if 'cantidad_texto' not in df.columns:
+                df['cantidad_texto'] = df['toneladas'].astype(str)
 
             st.dataframe(
-                df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'unidad_medida', 'cantidad_sacos', 'toneladas', 'descripcion']],
+                df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'cantidad_texto', 'unidad_medida', 'toneladas', 'descripcion']],
                 use_container_width=True,
                 hide_index=True
             )
@@ -709,14 +783,18 @@ def main():
                         # Mostrar cantidad según unidad actual almacenada
                         factor = CONVERSION_A_TONELADAS.get(unidad_actual)
                         val_cantidad = float(row['toneladas']) if (factor and row['toneladas']) else float(row['cantidad_sacos'] or 0)
-                        cantidad_edit = st.number_input(f"Cantidad ({unidad_edit})", min_value=0.0, value=val_cantidad, format="%.4g", key=f"e_cant_{id_s}")
+                        key_cant = f"e_cant_{id_s}"
+                        if key_cant not in st.session_state:
+                            st.session_state[key_cant] = str(int(val_cantidad) if val_cantidad == int(val_cantidad) else val_cantidad)
+                        cantidad_str_edit = st.text_input(f"Cantidad ({unidad_edit})", key=key_cant, placeholder="Ej: 28.910,00")
+                        cantidad_edit = parse_cantidad(cantidad_str_edit) if cantidad_str_edit.strip() else val_cantidad
                         sacos_edit = st.number_input("Sacos (opcional)", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
                         desc_edit = st.text_area("Descripción", value=row['descripcion'] or "", key=f"e_desc_{id_s}")
 
                         btn_g1, btn_g2 = st.columns(2)
                         with btn_g1:
                             if st.button("💾 Guardar Cambios", key=f"save_{id_s}", type="primary"):
-                                if db.actualizar_operacion(id_s, fecha_edit, placa_edit, cond_edit, tipo_edit, unidad_edit, desc_edit, sacos_edit, cantidad_edit):
+                                if db.actualizar_operacion(id_s, fecha_edit, placa_edit, cond_edit, tipo_edit, unidad_edit, desc_edit, sacos_edit, cantidad_edit, cantidad_str_edit):
                                     st.success("✅ Registro actualizado.")
                                     st.session_state.editando_id = None
                                     st.rerun()

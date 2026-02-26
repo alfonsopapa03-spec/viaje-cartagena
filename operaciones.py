@@ -438,22 +438,32 @@ def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> byte
             if fill_row:
                 cell.fill = fill_row
 
+    # --- COLUMNA OCULTA CON VALOR NUMÉRICO DE CANTIDAD ---
+    num_cols = len(col_keys)
+    col_num_cantidad = num_cols + 1
+    col_num_letra = get_column_letter(col_num_cantidad)
+    if "cantidad_texto" in df.columns:
+        for i, val in enumerate(df["cantidad_texto"].tolist(), start=header_row + 1):
+            num_val = parse_cantidad(str(val)) if val else 0.0
+            ws.cell(row=i, column=col_num_cantidad, value=num_val).number_format = '#,##0.00'
+        ws.column_dimensions[col_num_letra].hidden = True
+
     # --- FILA TOTALES ---
     total_row = header_row + len(df) + 1
     ws.cell(row=total_row, column=1, value="TOTALES").font = font_total
     ws.cell(row=total_row, column=1).fill = fill_total
     ws.cell(row=total_row, column=1).alignment = align_center
 
-    # Total sacos
-    if "cantidad_sacos" in col_keys:
-        sacos_col = col_keys.index("cantidad_sacos") + 1
-        sacos_letter = get_column_letter(sacos_col)
-        cell_sacos = ws.cell(row=total_row, column=sacos_col)
-        cell_sacos.value = f"=SUM({sacos_letter}{header_row+1}:{sacos_letter}{total_row-1})"
-        cell_sacos.font = font_total
-        cell_sacos.fill = fill_total
-        cell_sacos.border = border_thin
-        cell_sacos.alignment = align_center
+    # Total cantidad (suma usando columna oculta numérica)
+    if "cantidad_texto" in col_keys:
+        cant_col = col_keys.index("cantidad_texto") + 1
+        cell_cant = ws.cell(row=total_row, column=cant_col)
+        cell_cant.value = f"=SUM({col_num_letra}{header_row+1}:{col_num_letra}{total_row-1})"
+        cell_cant.number_format = '#,##0.00'
+        cell_cant.font = font_total
+        cell_cant.fill = fill_total
+        cell_cant.border = border_thin
+        cell_cant.alignment = align_center
 
     # Total toneladas
     if "toneladas" in col_keys:
@@ -465,20 +475,14 @@ def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> byte
         cell_ton.fill = fill_total
         cell_ton.border = border_thin
         cell_ton.alignment = align_center
-        # Formato número colombiano para toda la columna toneladas
         for r in range(header_row + 1, total_row + 1):
             ws.cell(r, ton_col).number_format = '#,##0.00'
 
     # --- ANCHO DE COLUMNAS ---
     anchos = {
-        "fecha_operacion": 14,
-        "placa": 12,
-        "conductor": 22,
-        "tipo_carga": 22,
-        "cantidad_texto": 16,
-        "unidad_medida": 18,
-        "toneladas": 14,
-        "descripcion": 35,
+        "fecha_operacion": 14, "placa": 12, "conductor": 22,
+        "tipo_carga": 22, "cantidad_texto": 16, "unidad_medida": 18,
+        "toneladas": 14, "descripcion": 35,
     }
     for col_idx, key in enumerate(col_keys, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = anchos.get(key, 15)
@@ -488,37 +492,57 @@ def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> byte
     ws2["A1"] = "Resumen por Tipo de Carga"
     ws2["A1"].font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
     ws2["A1"].fill = fill_titulo
-    ws2.merge_cells("A1:D1")
+    ws2.merge_cells("A1:E1")
     ws2["A1"].alignment = align_center
 
-    ws2["A2"] = "Tipo de Carga"
-    ws2["B2"] = "Viajes"
-    ws2["C2"] = "Total Sacos"
-    ws2["D2"] = "Total Toneladas"
-    for col in ["A2", "B2", "C2", "D2"]:
+    for col, titulo in zip(["A2","B2","C2","D2","E2"], ["Tipo de Carga","Viajes","Total Cantidad","Unidad","Total Toneladas"]):
+        ws2[col] = titulo
         ws2[col].font = font_header
         ws2[col].fill = fill_header
         ws2[col].alignment = align_center
         ws2[col].border = border_thin
 
     if "tipo_carga" in df.columns:
+        df["_cant_num"] = df["cantidad_texto"].apply(lambda x: parse_cantidad(str(x)) if x else 0.0)
         resumen = df.groupby("tipo_carga").agg(
             viajes=("id", "count"),
-            sacos=("cantidad_sacos", "sum"),
+            cantidad_num=("_cant_num", "sum"),
             toneladas=("toneladas", "sum")
         ).reset_index()
+        unidad_por_tipo = df.groupby("tipo_carga")["unidad_medida"].agg(
+            lambda x: x.mode()[0] if len(x) > 0 else ""
+        ).to_dict() if "unidad_medida" in df.columns else {}
 
         for r_idx, row in resumen.iterrows():
             r = r_idx + 3
+            ton_val = row["toneladas"]
+            ton_display = round(float(ton_val), 2) if ton_val and not pd.isna(ton_val) else 0.0
             ws2.cell(r, 1, row["tipo_carga"]).border = border_thin
             ws2.cell(r, 2, int(row["viajes"])).border = border_thin
-            ws2.cell(r, 3, int(row["sacos"])).border = border_thin
-            ws2.cell(r, 4, round(float(row["toneladas"]), 2)).border = border_thin
-            for c in range(1, 5):
+            c3 = ws2.cell(r, 3, round(float(row["cantidad_num"]), 2))
+            c3.border = border_thin
+            c3.number_format = '#,##0.00'
+            ws2.cell(r, 4, unidad_por_tipo.get(row["tipo_carga"], "")).border = border_thin
+            c5 = ws2.cell(r, 5, ton_display)
+            c5.border = border_thin
+            c5.number_format = '#,##0.00'
+            for c in range(1, 6):
                 ws2.cell(r, c).font = font_normal
                 ws2.cell(r, c).alignment = align_center
 
-    for col_letter, width in zip(["A", "B", "C", "D"], [25, 10, 14, 16]):
+        # Fila TOTAL en resumen
+        total_r = len(resumen) + 3
+        ws2.cell(total_r, 1, "TOTAL").font = font_total
+        ws2.cell(total_r, 1).fill = fill_total
+        ws2.cell(total_r, 1).alignment = align_center
+        c3t = ws2.cell(total_r, 3, round(float(df["_cant_num"].sum()), 2))
+        c3t.font = font_total; c3t.fill = fill_total; c3t.number_format = '#,##0.00'; c3t.alignment = align_center
+        ton_tot = df["toneladas"].sum()
+        c5t = ws2.cell(total_r, 5, round(float(ton_tot), 2) if not pd.isna(ton_tot) else 0.0)
+        c5t.font = font_total; c5t.fill = fill_total; c5t.number_format = '#,##0.00'; c5t.alignment = align_center
+        df.drop(columns=["_cant_num"], inplace=True)
+
+    for col_letter, width in zip(["A","B","C","D","E"], [25, 10, 16, 20, 16]):
         ws2.column_dimensions[col_letter].width = width
 
     output = io.BytesIO()

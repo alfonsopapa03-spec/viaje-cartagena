@@ -565,7 +565,7 @@ def main():
         with col2:
             tipo_carga = st.selectbox("Tipo de Carga", TIPOS_CARGA, key="reg_tipo")
             unidad = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, key="reg_unidad")
-            cantidad = st.number_input(f"Cantidad ({unidad})", min_value=0.0, step=0.1, format="%.2f", key="reg_cantidad")
+            cantidad = st.number_input(f"Cantidad ({unidad})", min_value=0.0, step=1.0, format="%.4g", key="reg_cantidad")
             sacos = st.number_input("Cantidad de Sacos (opcional)", min_value=0, step=1, key="reg_sacos")
 
         descripcion = st.text_area("Descripción / Observaciones", key="reg_desc")
@@ -709,7 +709,7 @@ def main():
                         # Mostrar cantidad según unidad actual almacenada
                         factor = CONVERSION_A_TONELADAS.get(unidad_actual)
                         val_cantidad = float(row['toneladas']) if (factor and row['toneladas']) else float(row['cantidad_sacos'] or 0)
-                        cantidad_edit = st.number_input(f"Cantidad ({unidad_edit})", min_value=0.0, value=val_cantidad, format="%.2f", key=f"e_cant_{id_s}")
+                        cantidad_edit = st.number_input(f"Cantidad ({unidad_edit})", min_value=0.0, value=val_cantidad, format="%.4g", key=f"e_cant_{id_s}")
                         sacos_edit = st.number_input("Sacos (opcional)", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
                         desc_edit = st.text_area("Descripción", value=row['descripcion'] or "", key=f"e_desc_{id_s}")
 

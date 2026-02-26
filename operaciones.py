@@ -20,6 +20,26 @@ st.set_page_config(
 # ==================== CREDENCIALES SUPABASE ====================
 SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
 
+# ==================== UNIDADES DE MEDIDA ====================
+UNIDADES_MEDIDA = [
+    "Toneladas (t)",
+    "Kilogramos (kg)",
+    "Libras (lb)",
+    "Sacos",
+    "Unidades",
+    "M³ (metros cúbicos)",
+]
+
+# Factores de conversión a toneladas para el dashboard
+CONVERSION_A_TONELADAS = {
+    "Toneladas (t)": 1.0,
+    "Kilogramos (kg)": 0.001,
+    "Libras (lb)": 0.000453592,
+    "Sacos": None,       # No convertible automáticamente
+    "Unidades": None,
+    "M³ (metros cúbicos)": None,
+}
+
 # ==================== TIPOS DE CARGA ====================
 TIPOS_CARGA = [
     "Sacos de Arroz",
@@ -72,6 +92,7 @@ class DatabaseManager:
                     placa TEXT NOT NULL,
                     conductor TEXT,
                     tipo_carga TEXT,
+                    unidad_medida TEXT DEFAULT 'Toneladas (t)',
                     descripcion TEXT,
                     cantidad_sacos INTEGER,
                     toneladas REAL,
@@ -80,12 +101,16 @@ class DatabaseManager:
                 )
             ''')
 
-            # Agregar columna tipo_carga si no existe (para bases ya creadas)
-            try:
-                cursor.execute("ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS tipo_carga TEXT")
-                conn.commit()
-            except:
-                conn.rollback()
+            # Agregar columnas nuevas si no existen (para bases ya creadas)
+            for col_sql in [
+                "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS tipo_carga TEXT",
+                "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS unidad_medida TEXT DEFAULT 'Toneladas (t)'",
+            ]:
+                try:
+                    cursor.execute(col_sql)
+                    conn.commit()
+                except:
+                    conn.rollback()
 
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_fecha ON operaciones_cartagena(fecha_operacion);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_placa ON operaciones_cartagena(placa);")
@@ -98,7 +123,7 @@ class DatabaseManager:
     def obtener_datos_dashboard(self, fecha_inicio, fecha_fin):
         conn = self.get_connection()
         query = """
-            SELECT fecha_operacion, placa, conductor, tipo_carga, cantidad_sacos, toneladas
+            SELECT fecha_operacion, placa, conductor, tipo_carga, unidad_medida, cantidad_sacos, toneladas
             FROM operaciones_cartagena
             WHERE fecha_operacion BETWEEN %s AND %s
             ORDER BY fecha_operacion ASC
@@ -149,18 +174,22 @@ class DatabaseManager:
         except:
             return False
 
-    def guardar_operacion(self, fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo):
+    def guardar_operacion(self, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, imagen_bytes, nombre_archivo):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
+            # Calcular toneladas si la unidad es convertible
+            factor = CONVERSION_A_TONELADAS.get(unidad_medida)
+            toneladas = round(cantidad * factor, 4) if factor else None
+
             sql = '''
                 INSERT INTO operaciones_cartagena
-                (fecha_operacion, placa, conductor, tipo_carga, descripcion, cantidad_sacos, toneladas, imagen_comprobante, nombre_archivo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                (fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion, cantidad_sacos, toneladas, imagen_comprobante, nombre_archivo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             '''
             if imagen_bytes:
                 imagen_bytes = psycopg2.Binary(imagen_bytes)
-            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo))
+            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo))
             conn.commit()
             conn.close()
             return True
@@ -168,18 +197,20 @@ class DatabaseManager:
             st.error(f"Error guardando: {e}")
             return False
 
-    def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas):
+    def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad):
         """Actualiza un registro existente sin tocar la imagen"""
         try:
+            factor = CONVERSION_A_TONELADAS.get(unidad_medida)
+            toneladas = round(cantidad * factor, 4) if factor else None
             conn = self.get_connection()
             cursor = conn.cursor()
             sql = '''
                 UPDATE operaciones_cartagena
-                SET fecha_operacion=%s, placa=%s, conductor=%s, tipo_carga=%s,
+                SET fecha_operacion=%s, placa=%s, conductor=%s, tipo_carga=%s, unidad_medida=%s,
                     descripcion=%s, cantidad_sacos=%s, toneladas=%s
                 WHERE id=%s
             '''
-            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas, registro_id))
+            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, registro_id))
             conn.commit()
             conn.close()
             return True
@@ -190,7 +221,7 @@ class DatabaseManager:
     def obtener_historial(self, fecha_inicio=None, fecha_fin=None, placa=None, conductor=None, tipo_carga=None):
         conn = self.get_connection()
         query = """
-            SELECT id, fecha_operacion, placa, conductor, tipo_carga, descripcion,
+            SELECT id, fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion,
                    cantidad_sacos, toneladas, nombre_archivo
             FROM operaciones_cartagena
             WHERE 1=1
@@ -530,8 +561,9 @@ def main():
 
         with col2:
             tipo_carga = st.selectbox("Tipo de Carga", TIPOS_CARGA, key="reg_tipo")
-            sacos = st.number_input("Cantidad de Sacos / Unidades", min_value=0, step=1, key="reg_sacos")
-            toneladas = st.number_input("Total Toneladas", min_value=0.0, step=0.1, format="%.2f", key="reg_ton")
+            unidad = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, key="reg_unidad")
+            cantidad = st.number_input(f"Cantidad ({unidad})", min_value=0.0, step=0.1, format="%.2f", key="reg_cantidad")
+            sacos = st.number_input("Cantidad de Sacos (opcional)", min_value=0, step=1, key="reg_sacos")
 
         descripcion = st.text_area("Descripción / Observaciones", key="reg_desc")
 
@@ -539,8 +571,8 @@ def main():
         archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'], key="reg_file")
 
         if st.button("💾 Guardar Registro", type="primary"):
-            if not placa_selec or toneladas <= 0:
-                st.error("⚠️ Faltan datos (Placa o Toneladas).")
+            if not placa_selec or cantidad <= 0:
+                st.error("⚠️ Faltan datos (Placa o Cantidad).")
             else:
                 with st.spinner("Guardando..."):
                     img_bytes = None
@@ -549,8 +581,8 @@ def main():
                         img_bytes = procesar_imagen(archivo_foto)
                         fname = archivo_foto.name
 
-                    if db.guardar_operacion(fecha_op, placa_selec, conductor, tipo_carga, descripcion, sacos, toneladas, img_bytes, fname):
-                        st.success(f"✅ Operación Guardada: {placa_selec} | {tipo_carga} | {toneladas} ton")
+                    if db.guardar_operacion(fecha_op, placa_selec, conductor, tipo_carga, unidad, descripcion, sacos, cantidad, img_bytes, fname):
+                        st.success(f"✅ Operación Guardada: {placa_selec} | {tipo_carga} | {cantidad} {unidad}")
                     else:
                         st.error("Error al guardar en base de datos.")
 
@@ -594,7 +626,7 @@ def main():
 
             # --- TABLA ---
             st.dataframe(
-                df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'descripcion', 'cantidad_sacos', 'toneladas']],
+                df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'unidad_medida', 'cantidad_sacos', 'toneladas', 'descripcion']],
                 use_container_width=True,
                 hide_index=True
             )
@@ -630,8 +662,10 @@ def main():
                         st.success(f"**Placa:** {row['placa']}")
                         st.info(f"**Conductor:** {row['conductor']}")
                         st.write(f"**Tipo de Carga:** {row.get('tipo_carga', 'N/A')}")
-                        st.write(f"**Sacos:** {row['cantidad_sacos']}")
-                        st.write(f"**Toneladas:** {row['toneladas']}")
+                        st.write(f"**Cantidad:** {row['cantidad_sacos']} sacos")
+                        unidad_actual = row.get('unidad_medida', 'Toneladas (t)')
+                        st.write(f"**Toneladas equiv.:** {row['toneladas']} t" if row['toneladas'] else f"**Cantidad:** {row['cantidad_sacos']} {unidad_actual}")
+                        st.write(f"**Unidad:** {unidad_actual}")
                         st.write(f"**Descripción:** {row['descripcion']}")
 
                         btn_col1, btn_col2 = st.columns(2)
@@ -659,14 +693,21 @@ def main():
                         tipo_idx = TIPOS_CARGA.index(row['tipo_carga']) if row.get('tipo_carga') in TIPOS_CARGA else 0
                         tipo_edit = st.selectbox("Tipo de Carga", TIPOS_CARGA, index=tipo_idx, key=f"e_tipo_{id_s}")
 
-                        sacos_edit = st.number_input("Sacos", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
-                        ton_edit = st.number_input("Toneladas", min_value=0.0, value=float(row['toneladas'] or 0.0), format="%.2f", key=f"e_ton_{id_s}")
+                        unidad_actual = row.get('unidad_medida', 'Toneladas (t)')
+                        unidad_idx = UNIDADES_MEDIDA.index(unidad_actual) if unidad_actual in UNIDADES_MEDIDA else 0
+                        unidad_edit = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, index=unidad_idx, key=f"e_unidad_{id_s}")
+
+                        # Mostrar cantidad según unidad actual almacenada
+                        factor = CONVERSION_A_TONELADAS.get(unidad_actual)
+                        val_cantidad = float(row['toneladas']) if (factor and row['toneladas']) else float(row['cantidad_sacos'] or 0)
+                        cantidad_edit = st.number_input(f"Cantidad ({unidad_edit})", min_value=0.0, value=val_cantidad, format="%.2f", key=f"e_cant_{id_s}")
+                        sacos_edit = st.number_input("Sacos (opcional)", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
                         desc_edit = st.text_area("Descripción", value=row['descripcion'] or "", key=f"e_desc_{id_s}")
 
                         btn_g1, btn_g2 = st.columns(2)
                         with btn_g1:
                             if st.button("💾 Guardar Cambios", key=f"save_{id_s}", type="primary"):
-                                if db.actualizar_operacion(id_s, fecha_edit, placa_edit, cond_edit, tipo_edit, desc_edit, sacos_edit, ton_edit):
+                                if db.actualizar_operacion(id_s, fecha_edit, placa_edit, cond_edit, tipo_edit, unidad_edit, desc_edit, sacos_edit, cantidad_edit):
                                     st.success("✅ Registro actualizado.")
                                     st.session_state.editando_id = None
                                     st.rerun()

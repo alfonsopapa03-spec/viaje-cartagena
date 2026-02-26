@@ -4,18 +4,37 @@ from datetime import datetime, timedelta
 import pandas as pd
 from PIL import Image
 import io
-import plotly.express as px  # NUEVA LIBRERÍA PARA GRÁFICOS
+import plotly.express as px
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # ==================== CONFIGURACIÓN DE PÁGINA ====================
 st.set_page_config(
-    page_title="Logística Cartagena", 
-    layout="wide", 
+    page_title="Logística Cartagena",
+    layout="wide",
     page_icon="🚛",
     initial_sidebar_state="collapsed"
 )
 
 # ==================== CREDENCIALES SUPABASE ====================
 SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
+
+# ==================== TIPOS DE CARGA ====================
+TIPOS_CARGA = [
+    "Sacos de Arroz",
+    "Sacos de Azúcar",
+    "Sacos de Café",
+    "Sacos de Harina",
+    "Fertilizantes",
+    "Ladrillos",
+    "Cemento",
+    "Arena / Gravilla",
+    "Carbón",
+    "Contenedor",
+    "Carga General",
+    "Otro"
+]
 
 # ==================== GESTOR DE BASE DE DATOS ====================
 class DatabaseManager:
@@ -27,12 +46,10 @@ class DatabaseManager:
         return psycopg2.connect(self.db_url)
 
     def init_database(self):
-        """Inicializa tablas y actualiza columnas si faltan"""
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
 
-            # 1. Tabla Vehículos
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS tractomulas (
                     id SERIAL PRIMARY KEY,
@@ -47,7 +64,6 @@ class DatabaseManager:
             except:
                 conn.rollback()
 
-            # 2. Tabla Operaciones
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS operaciones_cartagena (
                     id SERIAL PRIMARY KEY,
@@ -55,6 +71,7 @@ class DatabaseManager:
                     fecha_operacion DATE NOT NULL,
                     placa TEXT NOT NULL,
                     conductor TEXT,
+                    tipo_carga TEXT,
                     descripcion TEXT,
                     cantidad_sacos INTEGER,
                     toneladas REAL,
@@ -62,7 +79,14 @@ class DatabaseManager:
                     nombre_archivo TEXT
                 )
             ''')
-            
+
+            # Agregar columna tipo_carga si no existe (para bases ya creadas)
+            try:
+                cursor.execute("ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS tipo_carga TEXT")
+                conn.commit()
+            except:
+                conn.rollback()
+
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_fecha ON operaciones_cartagena(fecha_operacion);")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_placa ON operaciones_cartagena(placa);")
 
@@ -71,12 +95,11 @@ class DatabaseManager:
         except Exception as e:
             st.error(f"Error DB: {e}")
 
-    # --- DATOS GENERALES PARA DASHBOARD ---
     def obtener_datos_dashboard(self, fecha_inicio, fecha_fin):
         conn = self.get_connection()
         query = """
-            SELECT fecha_operacion, placa, conductor, cantidad_sacos, toneladas 
-            FROM operaciones_cartagena 
+            SELECT fecha_operacion, placa, conductor, tipo_carga, cantidad_sacos, toneladas
+            FROM operaciones_cartagena
             WHERE fecha_operacion BETWEEN %s AND %s
             ORDER BY fecha_operacion ASC
         """
@@ -88,7 +111,6 @@ class DatabaseManager:
         finally:
             conn.close()
 
-    # --- VEHÍCULOS ---
     def obtener_vehiculos_completo(self):
         conn = self.get_connection()
         try:
@@ -104,9 +126,9 @@ class DatabaseManager:
             conn = self.get_connection()
             cursor = conn.cursor()
             sql = """
-                INSERT INTO tractomulas (placa, tipo, conductor) 
-                VALUES (%s, %s, %s) 
-                ON CONFLICT (placa) 
+                INSERT INTO tractomulas (placa, tipo, conductor)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (placa)
                 DO UPDATE SET conductor = EXCLUDED.conductor, tipo = EXCLUDED.tipo
             """
             cursor.execute(sql, (placa, tipo, conductor))
@@ -127,20 +149,18 @@ class DatabaseManager:
         except:
             return False
 
-    # --- OPERACIONES ---
-    def guardar_operacion(self, fecha, placa, conductor, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo):
+    def guardar_operacion(self, fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
             sql = '''
-                INSERT INTO operaciones_cartagena 
-                (fecha_operacion, placa, conductor, descripcion, cantidad_sacos, toneladas, imagen_comprobante, nombre_archivo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                INSERT INTO operaciones_cartagena
+                (fecha_operacion, placa, conductor, tipo_carga, descripcion, cantidad_sacos, toneladas, imagen_comprobante, nombre_archivo)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
             '''
             if imagen_bytes:
                 imagen_bytes = psycopg2.Binary(imagen_bytes)
-                
-            cursor.execute(sql, (fecha, placa, conductor, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo))
+            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas, imagen_bytes, nombre_archivo))
             conn.commit()
             conn.close()
             return True
@@ -148,13 +168,32 @@ class DatabaseManager:
             st.error(f"Error guardando: {e}")
             return False
 
-    def obtener_historial(self, fecha_inicio=None, fecha_fin=None, placa=None, conductor=None):
+    def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas):
+        """Actualiza un registro existente sin tocar la imagen"""
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            sql = '''
+                UPDATE operaciones_cartagena
+                SET fecha_operacion=%s, placa=%s, conductor=%s, tipo_carga=%s,
+                    descripcion=%s, cantidad_sacos=%s, toneladas=%s
+                WHERE id=%s
+            '''
+            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, descripcion, sacos, toneladas, registro_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            st.error(f"Error actualizando: {e}")
+            return False
+
+    def obtener_historial(self, fecha_inicio=None, fecha_fin=None, placa=None, conductor=None, tipo_carga=None):
         conn = self.get_connection()
         query = """
-            SELECT id, fecha_operacion, placa, conductor, descripcion, 
-                   cantidad_sacos, toneladas, nombre_archivo 
-            FROM operaciones_cartagena 
-            WHERE 1=1 
+            SELECT id, fecha_operacion, placa, conductor, tipo_carga, descripcion,
+                   cantidad_sacos, toneladas, nombre_archivo
+            FROM operaciones_cartagena
+            WHERE 1=1
         """
         params = []
         if fecha_inicio:
@@ -169,9 +208,12 @@ class DatabaseManager:
         if conductor:
             query += " AND conductor ILIKE %s"
             params.append(f"%{conductor}%")
-            
+        if tipo_carga and tipo_carga != "Todos":
+            query += " AND tipo_carga = %s"
+            params.append(tipo_carga)
+
         query += " ORDER BY fecha_operacion DESC, id DESC"
-        
+
         try:
             df = pd.read_sql(query, conn, params=params)
             return df
@@ -201,6 +243,7 @@ class DatabaseManager:
         except:
             return False
 
+
 # ==================== UTILIDADES ====================
 def procesar_imagen(uploaded_file):
     if uploaded_file is None:
@@ -221,24 +264,195 @@ def procesar_imagen(uploaded_file):
         st.error(f"Error imagen: {e}")
         return None
 
+
+def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> bytes:
+    """Genera un Excel profesional con formato a partir de un DataFrame"""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Operaciones"
+
+    # Estilos
+    color_header = "1F4E79"
+    color_subheader = "2E75B6"
+    color_alt = "D6E4F0"
+
+    font_titulo = Font(name="Arial", bold=True, size=14, color="FFFFFF")
+    font_header = Font(name="Arial", bold=True, size=10, color="FFFFFF")
+    font_normal = Font(name="Arial", size=9)
+    font_total = Font(name="Arial", bold=True, size=10)
+
+    fill_titulo = PatternFill("solid", start_color=color_header)
+    fill_header = PatternFill("solid", start_color=color_subheader)
+    fill_alt = PatternFill("solid", start_color=color_alt)
+    fill_total = PatternFill("solid", start_color="BDD7EE")
+
+    border_thin = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    align_center = Alignment(horizontal="center", vertical="center")
+    align_left = Alignment(horizontal="left", vertical="center")
+
+    # --- FILA TÍTULO ---
+    ws.merge_cells("A1:I1")
+    ws["A1"] = f"🚛 {titulo}"
+    ws["A1"].font = font_titulo
+    ws["A1"].fill = fill_titulo
+    ws["A1"].alignment = align_center
+    ws.row_dimensions[1].height = 28
+
+    # --- FILA FECHA GENERACIÓN ---
+    ws.merge_cells("A2:I2")
+    ws["A2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Total registros: {len(df)}"
+    ws["A2"].font = Font(name="Arial", italic=True, size=9, color="555555")
+    ws["A2"].alignment = align_center
+    ws.row_dimensions[2].height = 16
+
+    ws.append([])  # fila vacía
+
+    # --- ENCABEZADOS ---
+    columnas = {
+        "fecha_operacion": "Fecha",
+        "placa": "Placa",
+        "conductor": "Conductor",
+        "tipo_carga": "Tipo de Carga",
+        "descripcion": "Descripción",
+        "cantidad_sacos": "Sacos",
+        "toneladas": "Toneladas",
+    }
+
+    col_keys = [k for k in columnas.keys() if k in df.columns]
+    col_names = [columnas[k] for k in col_keys]
+
+    header_row = 4
+    for col_idx, name in enumerate(col_names, start=1):
+        cell = ws.cell(row=header_row, column=col_idx, value=name)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = align_center
+        cell.border = border_thin
+    ws.row_dimensions[header_row].height = 20
+
+    # --- DATOS ---
+    for row_idx, (_, row) in enumerate(df[col_keys].iterrows(), start=header_row + 1):
+        fill_row = fill_alt if row_idx % 2 == 0 else None
+        for col_idx, key in enumerate(col_keys, start=1):
+            val = row[key]
+            if pd.isna(val):
+                val = ""
+            cell = ws.cell(row=row_idx, column=col_idx, value=val)
+            cell.font = font_normal
+            cell.border = border_thin
+            cell.alignment = align_center if key in ("fecha_operacion", "placa", "cantidad_sacos", "toneladas") else align_left
+            if fill_row:
+                cell.fill = fill_row
+
+    # --- FILA TOTALES ---
+    total_row = header_row + len(df) + 1
+    ws.cell(row=total_row, column=1, value="TOTALES").font = font_total
+    ws.cell(row=total_row, column=1).fill = fill_total
+    ws.cell(row=total_row, column=1).alignment = align_center
+
+    # Total sacos
+    if "cantidad_sacos" in col_keys:
+        sacos_col = col_keys.index("cantidad_sacos") + 1
+        sacos_letter = get_column_letter(sacos_col)
+        cell_sacos = ws.cell(row=total_row, column=sacos_col)
+        cell_sacos.value = f"=SUM({sacos_letter}{header_row+1}:{sacos_letter}{total_row-1})"
+        cell_sacos.font = font_total
+        cell_sacos.fill = fill_total
+        cell_sacos.border = border_thin
+        cell_sacos.alignment = align_center
+
+    # Total toneladas
+    if "toneladas" in col_keys:
+        ton_col = col_keys.index("toneladas") + 1
+        ton_letter = get_column_letter(ton_col)
+        cell_ton = ws.cell(row=total_row, column=ton_col)
+        cell_ton.value = f"=SUM({ton_letter}{header_row+1}:{ton_letter}{total_row-1})"
+        cell_ton.font = font_total
+        cell_ton.fill = fill_total
+        cell_ton.border = border_thin
+        cell_ton.alignment = align_center
+        ws.cell(row=total_row, column=ton_col).number_format = '#,##0.00'
+
+    # --- ANCHO DE COLUMNAS ---
+    anchos = {
+        "fecha_operacion": 14,
+        "placa": 12,
+        "conductor": 22,
+        "tipo_carga": 22,
+        "descripcion": 35,
+        "cantidad_sacos": 10,
+        "toneladas": 12,
+    }
+    for col_idx, key in enumerate(col_keys, start=1):
+        ws.column_dimensions[get_column_letter(col_idx)].width = anchos.get(key, 15)
+
+    # --- HOJA RESUMEN ---
+    ws2 = wb.create_sheet("Resumen")
+    ws2["A1"] = "Resumen por Tipo de Carga"
+    ws2["A1"].font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
+    ws2["A1"].fill = fill_titulo
+    ws2.merge_cells("A1:D1")
+    ws2["A1"].alignment = align_center
+
+    ws2["A2"] = "Tipo de Carga"
+    ws2["B2"] = "Viajes"
+    ws2["C2"] = "Total Sacos"
+    ws2["D2"] = "Total Toneladas"
+    for col in ["A2", "B2", "C2", "D2"]:
+        ws2[col].font = font_header
+        ws2[col].fill = fill_header
+        ws2[col].alignment = align_center
+        ws2[col].border = border_thin
+
+    if "tipo_carga" in df.columns:
+        resumen = df.groupby("tipo_carga").agg(
+            viajes=("id", "count"),
+            sacos=("cantidad_sacos", "sum"),
+            toneladas=("toneladas", "sum")
+        ).reset_index()
+
+        for r_idx, row in resumen.iterrows():
+            r = r_idx + 3
+            ws2.cell(r, 1, row["tipo_carga"]).border = border_thin
+            ws2.cell(r, 2, int(row["viajes"])).border = border_thin
+            ws2.cell(r, 3, int(row["sacos"])).border = border_thin
+            ws2.cell(r, 4, round(float(row["toneladas"]), 2)).border = border_thin
+            for c in range(1, 5):
+                ws2.cell(r, c).font = font_normal
+                ws2.cell(r, c).alignment = align_center
+
+    for col_letter, width in zip(["A", "B", "C", "D"], [25, 10, 14, 16]):
+        ws2.column_dimensions[col_letter].width = width
+
+    output = io.BytesIO()
+    wb.save(output)
+    return output.getvalue()
+
+
 # ==================== MAIN ====================
 def main():
     st.title("🚛 Operaciones Cartagena")
-    
+
     if 'db' not in st.session_state:
         st.session_state.db = DatabaseManager()
-    
+    if 'editando_id' not in st.session_state:
+        st.session_state.editando_id = None
+
     db = st.session_state.db
 
-    # DEFINICIÓN DE PESTAÑAS (Ahora el Dashboard es la primera)
     tab0, tab1, tab2, tab3 = st.tabs(["📊 Dashboard Gerencial", "📝 Nuevo Registro", "🔍 Historial Detallado", "🚛 Gestión Vehículos"])
 
-    # ---------------- TAB 0: DASHBOARD ----------------
+    # ============ TAB 0: DASHBOARD ============
     with tab0:
         st.markdown("### 📈 Resumen de Operaciones")
-        
-        # Filtro de fecha para el dashboard
-        col_filtro1, col_filtro2 = st.columns([1, 4])
+
+        col_filtro1, col_filtro2 = st.columns([2, 4])
         with col_filtro1:
             mes_actual = datetime.now()
             inicio_mes = mes_actual.replace(day=1)
@@ -247,93 +461,86 @@ def main():
                 value=(inicio_mes, mes_actual),
                 key="dash_dates"
             )
-        
-        # Validar que sea un rango
+
         if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
             f_start, f_end = rango_fechas
             df_dash = db.obtener_datos_dashboard(f_start, f_end)
-            
+
             if not df_dash.empty:
-                # --- KPI CARDS ---
                 total_ton = df_dash['toneladas'].sum()
                 total_sacos = df_dash['cantidad_sacos'].sum()
                 total_viajes = len(df_dash)
-                
+
                 k1, k2, k3 = st.columns(3)
-                k1.metric("⚖️ Toneladas Movidas", f"{total_ton:,.2f}", delta="Total Periodo")
-                k2.metric("📦 Sacos Movidos", f"{int(total_sacos):,}".replace(",", "."), delta="Total Periodo")
-                k3.metric("🚚 Viajes Realizados", total_viajes, delta="Despachos")
-                
+                k1.metric("⚖️ Toneladas Movidas", f"{total_ton:,.2f}")
+                k2.metric("📦 Sacos Movidos", f"{int(total_sacos):,}".replace(",", "."))
+                k3.metric("🚚 Viajes Realizados", total_viajes)
+
                 st.divider()
-                
-                # --- GRÁFICOS ---
+
                 c_chart1, c_chart2 = st.columns(2)
-                
+
                 with c_chart1:
                     st.subheader("🚛 Toneladas por Vehículo")
-                    # Agrupar por placa
                     df_placa = df_dash.groupby("placa")['toneladas'].sum().reset_index().sort_values('toneladas', ascending=True)
                     fig_placa = px.bar(df_placa, x='toneladas', y='placa', orientation='h', text_auto='.2s', color='toneladas')
                     st.plotly_chart(fig_placa, use_container_width=True)
 
                 with c_chart2:
-                    st.subheader("📆 Evolución Diaria")
-                    # Agrupar por fecha
-                    df_dia = df_dash.groupby("fecha_operacion")['toneladas'].sum().reset_index()
-                    fig_dia = px.line(df_dia, x='fecha_operacion', y='toneladas', markers=True, title="Toneladas por Día")
-                    st.plotly_chart(fig_dia, use_container_width=True)
-                
-                # --- PIE CHART CONDUCTORES ---
-                st.subheader("👤 Participación por Conductor")
-                df_cond = df_dash.groupby("conductor")['toneladas'].sum().reset_index()
-                fig_cond = px.pie(df_cond, values='toneladas', names='conductor', hole=0.4)
-                st.plotly_chart(fig_cond, use_container_width=True)
+                    st.subheader("📦 Toneladas por Tipo de Carga")
+                    if 'tipo_carga' in df_dash.columns and df_dash['tipo_carga'].notna().any():
+                        df_tipo = df_dash.groupby("tipo_carga")['toneladas'].sum().reset_index()
+                        fig_tipo = px.pie(df_tipo, values='toneladas', names='tipo_carga', hole=0.4)
+                        st.plotly_chart(fig_tipo, use_container_width=True)
+                    else:
+                        st.info("Sin datos de tipo de carga aún.")
+
+                st.subheader("📆 Evolución Diaria de Toneladas")
+                df_dia = df_dash.groupby("fecha_operacion")['toneladas'].sum().reset_index()
+                fig_dia = px.line(df_dia, x='fecha_operacion', y='toneladas', markers=True)
+                st.plotly_chart(fig_dia, use_container_width=True)
 
             else:
                 st.info("No hay datos registrados en este rango de fechas.")
         else:
             st.info("Selecciona una fecha de inicio y fin para ver el reporte.")
 
-    # ---------------- TAB 1: REGISTRO ----------------
+    # ============ TAB 1: REGISTRO ============
     with tab1:
         st.markdown("### Registrar Movimiento")
-        
+
         df_vehiculos = db.obtener_vehiculos_completo()
-        
         lista_placas = []
         mapa_conductores = {}
-        
+
         if not df_vehiculos.empty:
             lista_placas = df_vehiculos['placa'].tolist()
             mapa_conductores = {
                 row['placa']: (row['conductor'] if row['conductor'] else "")
-                for index, row in df_vehiculos.iterrows()
+                for _, row in df_vehiculos.iterrows()
             }
 
         col1, col2 = st.columns(2)
-        
+
         with col1:
             fecha_op = st.date_input("Fecha de Operación", datetime.now(), key="reg_fecha")
             placa_selec = st.selectbox("Placa / Unidad", lista_placas if lista_placas else [""], key="reg_placa")
-            
-            # Autocompletado manual en el input
             conductor_auto = mapa_conductores.get(placa_selec, "")
-            
-            # Usamos key para manejar el estado si es necesario, pero el value lo llena
             conductor = st.text_input("Conductor Asignado", value=conductor_auto, key="reg_cond")
 
         with col2:
-            sacos = st.number_input("Cantidad de Sacos", min_value=0, step=1, key="reg_sacos")
+            tipo_carga = st.selectbox("Tipo de Carga", TIPOS_CARGA, key="reg_tipo")
+            sacos = st.number_input("Cantidad de Sacos / Unidades", min_value=0, step=1, key="reg_sacos")
             toneladas = st.number_input("Total Toneladas", min_value=0.0, step=0.1, format="%.2f", key="reg_ton")
-            
+
         descripcion = st.text_area("Descripción / Observaciones", key="reg_desc")
-        
+
         st.markdown("#### 📸 Evidencia")
         archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'], key="reg_file")
-        
+
         if st.button("💾 Guardar Registro", type="primary"):
-            if not placa_selec or sacos <= 0 or toneladas <= 0:
-                st.error("⚠️ Faltan datos (Placa, Sacos o Toneladas).")
+            if not placa_selec or toneladas <= 0:
+                st.error("⚠️ Faltan datos (Placa o Toneladas).")
             else:
                 with st.spinner("Guardando..."):
                     img_bytes = None
@@ -341,72 +548,153 @@ def main():
                     if archivo_foto:
                         img_bytes = procesar_imagen(archivo_foto)
                         fname = archivo_foto.name
-                    
-                    if db.guardar_operacion(fecha_op, placa_selec, conductor, descripcion, sacos, toneladas, img_bytes, fname):
-                        st.success(f"✅ Operación Guardada: {placa_selec} ({toneladas} ton)")
+
+                    if db.guardar_operacion(fecha_op, placa_selec, conductor, tipo_carga, descripcion, sacos, toneladas, img_bytes, fname):
+                        st.success(f"✅ Operación Guardada: {placa_selec} | {tipo_carga} | {toneladas} ton")
                     else:
                         st.error("Error al guardar en base de datos.")
 
-    # ---------------- TAB 2: HISTORIAL ----------------
+    # ============ TAB 2: HISTORIAL ============
     with tab2:
         st.markdown("### 🔍 Historial Detallado")
+
         with st.expander("🛠️ Filtros", expanded=True):
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             with c1: f_ini = st.date_input("Inicio", datetime.now() - timedelta(days=15), key="hist_ini")
             with c2: f_fin = st.date_input("Fin", datetime.now(), key="hist_fin")
-            with c3: 
+            with c3:
                 df_v = db.obtener_vehiculos_completo()
                 l_placas = ["Todas"] + df_v['placa'].tolist() if not df_v.empty else ["Todas"]
                 f_pla = st.selectbox("Filtrar Placa", l_placas, key="hist_placa")
-            with c4: f_con = st.text_input("Buscar Conductor", key="hist_cond")
+            with c4:
+                f_con = st.text_input("Buscar Conductor", key="hist_cond")
+            with c5:
+                f_tipo = st.selectbox("Tipo de Carga", ["Todos"] + TIPOS_CARGA, key="hist_tipo")
 
-        df = db.obtener_historial(f_ini, f_fin, f_pla, f_con)
-        
+        df = db.obtener_historial(f_ini, f_fin, f_pla, f_con, f_tipo)
+
         if not df.empty:
-            st.dataframe(df[['fecha_operacion', 'placa', 'conductor', 'descripcion', 'cantidad_sacos', 'toneladas']], use_container_width=True, hide_index=True)
-            
-            st.subheader("🖼️ Ver Foto y Eliminar")
-            df['ver'] = df.apply(lambda x: f"ID {x['id']} | {x['fecha_operacion']} | {x['placa']}", axis=1)
-            sel = st.selectbox("Seleccionar viaje:", df['ver'].tolist(), key="hist_sel")
-            
+            # --- BOTÓN DESCARGAR EXCEL ---
+            st.markdown("#### 📥 Exportar")
+            col_exp1, col_exp2 = st.columns([2, 6])
+            with col_exp1:
+                nombre_informe = st.text_input("Nombre del informe", value="Operaciones_Cartagena", key="excel_nombre")
+            with col_exp2:
+                st.markdown("<br>", unsafe_allow_html=True)
+                excel_bytes = generar_excel(df, titulo=nombre_informe)
+                st.download_button(
+                    label="⬇️ Descargar Excel",
+                    data=excel_bytes,
+                    file_name=f"{nombre_informe}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary"
+                )
+
+            st.divider()
+
+            # --- TABLA ---
+            st.dataframe(
+                df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'descripcion', 'cantidad_sacos', 'toneladas']],
+                use_container_width=True,
+                hide_index=True
+            )
+
+            st.divider()
+
+            # --- VER / EDITAR / ELIMINAR ---
+            st.subheader("✏️ Editar / Ver Detalle")
+            df['label'] = df.apply(lambda x: f"ID {x['id']} | {x['fecha_operacion']} | {x['placa']} | {x.get('tipo_carga', '')} | {x['toneladas']} ton", axis=1)
+            sel = st.selectbox("Seleccionar viaje:", df['label'].tolist(), key="hist_sel")
+
             if sel:
                 id_s = int(sel.split(" | ")[0].replace("ID ", ""))
                 row = df[df['id'] == id_s].iloc[0]
-                c_img, c_dat = st.columns([1,1])
-                with c_img:
+
+                col_izq, col_der = st.columns([1, 1])
+
+                with col_izq:
+                    # Foto
                     if row['nombre_archivo']:
                         imd = db.obtener_imagen(id_s)
-                        if imd: st.image(imd, caption=row['nombre_archivo'], use_container_width=True)
-                    else: st.info("Sin foto")
-                with c_dat:
-                    st.success(f"Placa: {row['placa']}")
-                    st.info(f"Conductor: {row['conductor']}")
-                    st.write(f"Sacos: {row['cantidad_sacos']}")
-                    st.write(f"Notas: {row['descripcion']}")
-                    if st.button("🗑️ Eliminar este registro", key=f"del_{id_s}"):
-                        db.eliminar_registro(id_s)
-                        st.rerun()
-        else:
-            st.warning("No hay datos.")
+                        if imd:
+                            st.image(imd, caption=row['nombre_archivo'], use_container_width=True)
+                    else:
+                        st.info("Sin foto adjunta")
 
-    # ---------------- TAB 3: VEHÍCULOS ----------------
+                with col_der:
+                    # Modo edición
+                    editando = st.session_state.editando_id == id_s
+
+                    if not editando:
+                        # Vista lectura
+                        st.success(f"**Placa:** {row['placa']}")
+                        st.info(f"**Conductor:** {row['conductor']}")
+                        st.write(f"**Tipo de Carga:** {row.get('tipo_carga', 'N/A')}")
+                        st.write(f"**Sacos:** {row['cantidad_sacos']}")
+                        st.write(f"**Toneladas:** {row['toneladas']}")
+                        st.write(f"**Descripción:** {row['descripcion']}")
+
+                        btn_col1, btn_col2 = st.columns(2)
+                        with btn_col1:
+                            if st.button("✏️ Editar este viaje", key=f"edit_btn_{id_s}"):
+                                st.session_state.editando_id = id_s
+                                st.rerun()
+                        with btn_col2:
+                            if st.button("🗑️ Eliminar", key=f"del_{id_s}"):
+                                db.eliminar_registro(id_s)
+                                st.success("Registro eliminado.")
+                                st.rerun()
+                    else:
+                        # Formulario de edición
+                        st.markdown("#### ✏️ Editando viaje")
+
+                        df_v2 = db.obtener_vehiculos_completo()
+                        placas_edit = df_v2['placa'].tolist() if not df_v2.empty else [row['placa']]
+
+                        fecha_edit = st.date_input("Fecha", value=row['fecha_operacion'], key=f"e_fecha_{id_s}")
+                        placa_idx = placas_edit.index(row['placa']) if row['placa'] in placas_edit else 0
+                        placa_edit = st.selectbox("Placa", placas_edit, index=placa_idx, key=f"e_placa_{id_s}")
+                        cond_edit = st.text_input("Conductor", value=row['conductor'] or "", key=f"e_cond_{id_s}")
+
+                        tipo_idx = TIPOS_CARGA.index(row['tipo_carga']) if row.get('tipo_carga') in TIPOS_CARGA else 0
+                        tipo_edit = st.selectbox("Tipo de Carga", TIPOS_CARGA, index=tipo_idx, key=f"e_tipo_{id_s}")
+
+                        sacos_edit = st.number_input("Sacos", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
+                        ton_edit = st.number_input("Toneladas", min_value=0.0, value=float(row['toneladas'] or 0.0), format="%.2f", key=f"e_ton_{id_s}")
+                        desc_edit = st.text_area("Descripción", value=row['descripcion'] or "", key=f"e_desc_{id_s}")
+
+                        btn_g1, btn_g2 = st.columns(2)
+                        with btn_g1:
+                            if st.button("💾 Guardar Cambios", key=f"save_{id_s}", type="primary"):
+                                if db.actualizar_operacion(id_s, fecha_edit, placa_edit, cond_edit, tipo_edit, desc_edit, sacos_edit, ton_edit):
+                                    st.success("✅ Registro actualizado.")
+                                    st.session_state.editando_id = None
+                                    st.rerun()
+                        with btn_g2:
+                            if st.button("❌ Cancelar", key=f"cancel_{id_s}"):
+                                st.session_state.editando_id = None
+                                st.rerun()
+        else:
+            st.warning("No hay datos con los filtros seleccionados.")
+
+    # ============ TAB 3: VEHÍCULOS ============
     with tab3:
         st.subheader("🚛 Configuración de Flota")
-        
+
         c1, c2 = st.columns([1, 2])
-        
+
         with c1:
             with st.form("add_truck"):
                 p_new = st.text_input("Placa").upper()
                 p_con = st.text_input("Conductor Habitual")
                 p_tip = st.selectbox("Tipo", ["Tractomula", "Dobletroque", "Sencillo", "Turbo"])
-                
+
                 if st.form_submit_button("Guardar / Actualizar"):
                     if p_new:
                         if db.guardar_vehiculo(p_new, p_tip, p_con):
                             st.success(f"✅ {p_new} Guardada")
                             st.rerun()
-        
+
         with c2:
             df_v = db.obtener_vehiculos_completo()
             if not df_v.empty:
@@ -416,6 +704,6 @@ def main():
                     db.eliminar_vehiculo(p_del)
                     st.rerun()
 
+
 if __name__ == "__main__":
     main()
-

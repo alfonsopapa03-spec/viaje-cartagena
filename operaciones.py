@@ -1,7 +1,6 @@
 """
 Sistema de Gestión de Proveedores
-Versión 2.3 - PostgreSQL puro (BD + PDFs en BYTEA)
-Novedad: historial de actualizaciones por proveedor (tabla historial_actualizaciones)
+Versión 2.2 - PostgreSQL puro (BD + PDFs en BYTEA)
 Contexto: Colombia
 """
 
@@ -52,7 +51,6 @@ class DatabaseManager:
             conn = self.get_connection()
             cur = conn.cursor()
 
-            # Tabla principal de proveedores
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS proveedores (
                     id SERIAL PRIMARY KEY,
@@ -89,7 +87,6 @@ class DatabaseManager:
                 )
             ''')
 
-            # Tabla de PDFs con historial de versiones
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS documentos_pdf (
                     id SERIAL PRIMARY KEY,
@@ -102,18 +99,6 @@ class DatabaseManager:
                 )
             ''')
 
-            # ── NUEVA: Tabla historial de actualizaciones ─────────────────
-            cur.execute('''
-                CREATE TABLE IF NOT EXISTS historial_actualizaciones (
-                    id SERIAL PRIMARY KEY,
-                    proveedor_id INTEGER NOT NULL REFERENCES proveedores(id) ON DELETE CASCADE,
-                    fecha_actualizacion TEXT NOT NULL,
-                    tipo TEXT NOT NULL
-                )
-            ''')
-            # tipo: 'REGISTRO' (primera vez) o 'ACTUALIZACIÓN'
-
-            # Migraciones seguras
             for col_def in [
                 "ADD COLUMN IF NOT EXISTS tipo_actividad TEXT",
                 "ADD COLUMN IF NOT EXISTS fecha_vinculacion TEXT",
@@ -128,60 +113,6 @@ class DatabaseManager:
         except Exception as e:
             st.error(f"Error inicializando base de datos: {e}")
 
-    # ── Historial ────────────────────────────────────────────────────────────
-    def registrar_historial(self, proveedor_id: int, tipo: str):
-        """Inserta una fila en historial_actualizaciones con fecha/hora Colombia."""
-        try:
-            conn = self.get_connection()
-            cur = conn.cursor()
-            hora_col = (datetime.now() - timedelta(hours=5)).strftime('%Y-%m-%d %H:%M:%S')
-            cur.execute(
-                "INSERT INTO historial_actualizaciones (proveedor_id, fecha_actualizacion, tipo) "
-                "VALUES (%s, %s, %s)",
-                (proveedor_id, hora_col, tipo)
-            )
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            st.error(f"Error registrando historial: {e}")
-
-    def obtener_historial(self, proveedor_id: int):
-        """Devuelve todas las actualizaciones de un proveedor, más reciente primero."""
-        try:
-            conn = self.get_connection()
-            cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
-            cur.execute(
-                "SELECT id, fecha_actualizacion, tipo "
-                "FROM historial_actualizaciones "
-                "WHERE proveedor_id = %s ORDER BY fecha_actualizacion DESC",
-                (proveedor_id,)
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-            conn.close()
-            return rows
-        except Exception:
-            return []
-
-    def obtener_historial_todos(self):
-        """Devuelve historial completo de todos los proveedores (para el Excel)."""
-        try:
-            conn = self.get_connection()
-            df = pd.read_sql_query(
-                """
-                SELECT h.proveedor_id, p.nombre,
-                       h.fecha_actualizacion, h.tipo
-                FROM historial_actualizaciones h
-                JOIN proveedores p ON p.id = h.proveedor_id
-                ORDER BY p.nombre, h.fecha_actualizacion DESC
-                """,
-                conn
-            )
-            conn.close()
-            return df
-        except Exception:
-            return pd.DataFrame()
-
-    # ── Proveedores ──────────────────────────────────────────────────────────
     def guardar_proveedor(self, datos):
         try:
             conn = self.get_connection()
@@ -221,11 +152,7 @@ class DatabaseManager:
             result = cur.fetchone()
             conn.commit()
             conn.close()
-            if result:
-                # Registrar primer ingreso en el historial
-                self.registrar_historial(result[0], 'REGISTRO')
-                return result[0]
-            return None
+            return result[0] if result else None
         except Exception as e:
             st.error(f"Error guardando proveedor: {e}")
             return None
@@ -264,8 +191,6 @@ class DatabaseManager:
             ))
             conn.commit()
             conn.close()
-            # Registrar actualización en el historial
-            self.registrar_historial(proveedor_id, 'ACTUALIZACIÓN')
             return True
         except Exception as e:
             st.error(f"Error actualizando: {e}")
@@ -288,7 +213,6 @@ class DatabaseManager:
         conn.commit()
         conn.close()
 
-    # ── PDFs ─────────────────────────────────────────────────────────────────
     def subir_pdf(self, proveedor_id: int, doc_key: str, filename: str, contenido: bytes):
         try:
             conn = self.get_connection()
@@ -362,11 +286,12 @@ def estado_texto(pct):
 
 def fmt_bytes(size):
     if not size: return ""
-    if size < 1024:       return f"{size} B"
-    if size < 1_048_576:  return f"{size/1024:.1f} KB"
+    if size < 1024:        return f"{size} B"
+    if size < 1_048_576:   return f"{size/1024:.1f} KB"
     return f"{size/1_048_576:.1f} MB"
 
 def _parse_fecha(valor):
+    """Intenta parsear una fecha desde texto; retorna datetime o None."""
     if not valor or str(valor).strip() in ('', 'None', 'nan'):
         return None
     s = str(valor).strip()
@@ -378,6 +303,7 @@ def _parse_fecha(valor):
     return None
 
 def _dias_diferencia(fecha_str):
+    """Días entre hoy y una fecha texto. Negativo = vencida."""
     dt = _parse_fecha(fecha_str)
     if dt is None:
         return None
@@ -398,6 +324,7 @@ def widget_documento_pdf(db: DatabaseManager, proveedor_id: int,
     with col_body:
         icon = "✅" if entregado else "📄"
         with st.expander(f"{icon}  {doc_label}", expanded=False):
+
             st.markdown("##### 📤 Subir nueva versión")
             uploaded = st.file_uploader(
                 "Selecciona PDF", type=["pdf"],
@@ -442,7 +369,7 @@ def widget_documento_pdf(db: DatabaseManager, proveedor_id: int,
 
 
 # ==================== GENERADOR EXCEL ====================
-def generar_excel_proveedores(df, db: DatabaseManager):
+def generar_excel_proveedores(df):
     output = io.BytesIO()
     wb = Workbook()
 
@@ -454,8 +381,6 @@ def generar_excel_proveedores(df, db: DatabaseManager):
     amari  = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
     azul_c = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     gris_c = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    azul_r = PatternFill(start_color="D6E4F0", end_color="D6E4F0", fill_type="solid")  # registro
-    verd_a = PatternFill(start_color="D5F5E3", end_color="D5F5E3", fill_type="solid")  # actualización
     borde  = Border(left=Side(style='thin'), right=Side(style='thin'),
                     top=Side(style='thin'),  bottom=Side(style='thin'))
     centro = Alignment(horizontal='center', vertical='center')
@@ -467,19 +392,15 @@ def generar_excel_proveedores(df, db: DatabaseManager):
         cell.alignment = wrap_c; cell.border = borde
         return cell
 
-    def titulo(ws, rng, texto, size=15):
-        ws.merge_cells(rng)
-        ref = rng.split(':')[0]
-        ws[ref] = texto
-        ws[ref].font = Font(size=size, bold=True, color="1F4E78")
-        ws[ref].alignment = centro
-
     # ════════════════════════════════════════════════════════════════════════
     # Hoja 1 – Directorio
     # ════════════════════════════════════════════════════════════════════════
     ws1 = wb.active
     ws1.title = "Directorio Proveedores"
-    titulo(ws1, 'A1:H1', "DIRECTORIO DE PROVEEDORES")
+    ws1.merge_cells('A1:H1')
+    ws1['A1'] = "DIRECTORIO DE PROVEEDORES"
+    ws1['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws1['A1'].alignment = centro
     ws1.row_dimensions[1].height = 30
     ws1.merge_cells('A2:H2')
     ws1['A2'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   Total: {len(df)}"
@@ -503,7 +424,10 @@ def generar_excel_proveedores(df, db: DatabaseManager):
     # ════════════════════════════════════════════════════════════════════════
     ws2 = wb.create_sheet("Documentos y Cumplimiento")
     total_cols = 2 + TOTAL_DOCS + 3
-    titulo(ws2, f'A1:{get_column_letter(total_cols)}1', "ESTADO DOCUMENTAL POR PROVEEDOR")
+    ws2.merge_cells(f'A1:{get_column_letter(total_cols)}1')
+    ws2['A1'] = "ESTADO DOCUMENTAL POR PROVEEDOR"
+    ws2['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws2['A1'].alignment = centro
     hdrs2 = (['Proveedor', '% Índice'] + list(DOCUMENTOS.values()) +
              ['Fecha Vinculación', 'Última Actualización', 'Próxima Actualización'])
     for c, h in enumerate(hdrs2, 1):
@@ -534,7 +458,10 @@ def generar_excel_proveedores(df, db: DatabaseManager):
     # Hoja 3 – Evaluaciones y Control
     # ════════════════════════════════════════════════════════════════════════
     ws3 = wb.create_sheet("Evaluaciones y Control")
-    titulo(ws3, 'A1:G1', "EVALUACIONES Y CONTROL DE PROVEEDORES")
+    ws3.merge_cells('A1:G1')
+    ws3['A1'] = "EVALUACIONES Y CONTROL DE PROVEEDORES"
+    ws3['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws3['A1'].alignment = centro
     ws3.row_dimensions[1].height = 30
     for c, h in enumerate(['Proveedor', '13. Eval. Inicial (Riesgo)', '13. Fecha Eval.',
                             '14. Reevaluación', '15. Control Visitas',
@@ -644,127 +571,183 @@ def generar_excel_proveedores(df, db: DatabaseManager):
         ws4.column_dimensions[col].width = w
 
     # ════════════════════════════════════════════════════════════════════════
-    # Hoja 5 – Historial de Actualizaciones por Proveedor  ← NUEVA
+    # Hoja 5 – Trazabilidad de Actualizaciones  ← NUEVA
     # ════════════════════════════════════════════════════════════════════════
-    ws5 = wb.create_sheet("Historial Actualizaciones")
+    ws5 = wb.create_sheet("Trazabilidad Actualizaciones")
+    total_prov = len(df)
 
-    # Título principal
-    ws5.merge_cells('A1:F1')
-    ws5['A1'] = "HISTORIAL DE ACTUALIZACIONES POR PROVEEDOR"
+    # Título
+    ws5.merge_cells('A1:H1')
+    ws5['A1'] = "TRAZABILIDAD DE ACTUALIZACIONES"
     ws5['A1'].font = Font(size=15, bold=True, color="FFFFFF")
     ws5['A1'].fill = h_fill
     ws5['A1'].alignment = centro
     ws5.row_dimensions[1].height = 32
 
-    ws5.merge_cells('A2:F2')
-    ws5['A2'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   Total proveedores: {len(df)}"
+    ws5.merge_cells('A2:H2')
+    ws5['A2'] = (f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   "
+                 f"Total proveedores: {total_prov}")
     ws5['A2'].alignment = centro
     ws5['A2'].font = Font(italic=True, color="444444")
 
-    # Obtener historial completo desde BD
-    df_hist = db.obtener_historial_todos()
-
-    # ── Bloque A: Resumen por proveedor ─────────────────────────────────────
-    ws5.merge_cells('A4:F4')
-    ws5['A4'] = "▌ RESUMEN DE ACTUALIZACIONES POR PROVEEDOR"
+    # ── Bloque A: Resumen ejecutivo ─────────────────────────────────────────
+    ws5.merge_cells('A4:H4')
+    ws5['A4'] = "▌ RESUMEN EJECUTIVO DE ACTUALIZACIONES"
     ws5['A4'].font = Font(bold=True, size=12, color="1F4E78")
     ws5['A4'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     ws5.row_dimensions[4].height = 22
 
-    for c, h in enumerate(['Proveedor', 'Fecha Registro', 'Última Actualización',
-                            'N° Actualizaciones', '% Docs', 'Estado'], 1):
+    # Clasificar cada proveedor según días para vencer su próxima actualización
+    n_al_dia, n_por_vencer, n_vencidos, n_sin_fecha = 0, 0, 0, 0
+    for _, row in df.iterrows():
+        dias = _dias_diferencia(row.get('proxima_actualizacion', ''))
+        if dias is None:          n_sin_fecha  += 1
+        elif dias > 30:           n_al_dia     += 1
+        elif dias >= 0:           n_por_vencer += 1
+        else:                     n_vencidos   += 1
+
+    pct_al_dia     = round(n_al_dia     / total_prov * 100, 1) if total_prov else 0
+    pct_por_vencer = round(n_por_vencer / total_prov * 100, 1) if total_prov else 0
+    pct_vencidos   = round(n_vencidos   / total_prov * 100, 1) if total_prov else 0
+    pct_sin_fecha  = round(n_sin_fecha  / total_prov * 100, 1) if total_prov else 0
+
+    for c, h in enumerate(['Estado', 'N° Proveedores', '% del Total', 'Barra Visual'], 1):
         hdr(ws5, 5, c, h)
-    ws5.row_dimensions[5].height = 38
 
-    for r, (_, prov) in enumerate(df.iterrows(), 6):
-        nombre    = str(prov.get('nombre', '') or '')
-        prov_id   = int(prov['id'])
-        indice    = calcular_indice(prov)
+    resumen_rows = [
+        ("🟢 Al día (próxima actualización > 30 días)",     n_al_dia,     pct_al_dia,     verde),
+        ("🟡 Por vencer (próxima actualización ≤ 30 días)", n_por_vencer, pct_por_vencer, amari),
+        ("🔴 Vencidos (fecha ya pasó)",                     n_vencidos,   pct_vencidos,   rojo),
+        ("⚪ Sin fecha registrada",                          n_sin_fecha,  pct_sin_fecha,  gris_c),
+    ]
+    for ri, (estado, cantidad, pct, fill) in enumerate(resumen_rows, 6):
+        barra = "■" * int(pct / 5) + "□" * (20 - int(pct / 5))
+        for ci, v in enumerate([estado, cantidad, f"{pct}%", barra], 1):
+            cell = ws5.cell(row=ri, column=ci, value=v)
+            cell.border = borde; cell.fill = fill
+            if ci in (2, 3):
+                cell.alignment = centro; cell.font = Font(bold=True)
 
-        # Filtrar historial de este proveedor
-        if not df_hist.empty and 'proveedor_id' in df_hist.columns:
-            hist_prov = df_hist[df_hist['proveedor_id'] == prov_id]
-            n_total   = len(hist_prov)
-            # Solo actualizaciones (excluir el REGISTRO inicial)
-            n_act     = len(hist_prov[hist_prov['tipo'] == 'ACTUALIZACIÓN']) if n_total > 0 else 0
-            ult_fecha = hist_prov['fecha_actualizacion'].iloc[0] if n_total > 0 else "—"
-            fecha_reg = hist_prov[hist_prov['tipo'] == 'REGISTRO']['fecha_actualizacion'].values
-            fecha_reg = fecha_reg[0] if len(fecha_reg) > 0 else str(prov.get('fecha_registro', '') or '—')
+    # Fila total
+    for ci, v in enumerate(["TOTAL", total_prov, "100%", ""], 1):
+        cell = ws5.cell(row=10, column=ci, value=v)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = h_fill; cell.alignment = centro; cell.border = borde
+
+    # ── Bloque B: Detalle por proveedor ────────────────────────────────────
+    ws5.merge_cells('A12:H12')
+    ws5['A12'] = "▌ DETALLE POR PROVEEDOR"
+    ws5['A12'].font = Font(bold=True, size=12, color="1F4E78")
+    ws5['A12'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
+    ws5.row_dimensions[12].height = 22
+
+    det_hdrs = ['Proveedor', 'Última Actualización', 'Próxima Actualización',
+                'Días para Vencer', 'Estado Vigencia', '% Docs Entregados',
+                'N° Actualizaciones', 'Observación']
+    for c, h in enumerate(det_hdrs, 1):
+        hdr(ws5, 13, c, h)
+    ws5.row_dimensions[13].height = 45
+
+    for r, (_, row) in enumerate(df.iterrows(), 14):
+        nombre   = str(row.get('nombre', '') or '')
+        ult_act  = str(row.get('ultima_actualizacion', '') or '').strip()
+        prox_act = str(row.get('proxima_actualizacion', '') or '').strip()
+        indice   = calcular_indice(row)
+        dias     = _dias_diferencia(prox_act)
+        tiene_ult = ult_act not in ('', 'None', 'nan')
+        n_act     = 1 if tiene_ult else 0
+
+        if dias is None:
+            estado_vig = "⚪ Sin fecha";          fill_est = gris_c
+        elif dias > 30:
+            estado_vig = "🟢 Al día";             fill_est = verde
+        elif dias >= 0:
+            estado_vig = f"🟡 Vence en {dias}d";  fill_est = amari
         else:
-            n_total   = 0
-            n_act     = 0
-            ult_fecha = "—"
-            fecha_reg = str(prov.get('fecha_registro', '') or '—')
+            estado_vig = f"🔴 Vencido ({abs(dias)}d)"; fill_est = rojo
 
-        estado_doc = "✅ COMPLETO" if indice >= 80 else "⚠️ EN PROCESO" if indice >= 50 else "❌ CRÍTICO"
+        if dias is None:
+            obs = "Sin fechas — requiere ingreso"
+        elif dias < 0:
+            obs = f"Vencido hace {abs(dias)} días — actualización urgente"
+        elif dias <= 30:
+            obs = f"Vence en {dias} días — programar actualización"
+        else:
+            obs = "Vigente"
 
-        vals = [nombre, fecha_reg, ult_fecha, n_act, f"{indice}%", estado_doc]
+        vals = [
+            nombre,
+            ult_act  if tiene_ult                           else "—",
+            prox_act if prox_act not in ('', 'None', 'nan') else "—",
+            dias     if dias is not None                    else "—",
+            estado_vig,
+            f"{indice}%",
+            n_act,
+            obs,
+        ]
         for c, v in enumerate(vals, 1):
             cell = ws5.cell(row=r, column=c, value=v)
             cell.border = borde
-            if c == 4:   # N° actualizaciones
-                cell.alignment = centro
-                cell.font = Font(bold=True)
-                cell.fill = verde if n_act >= 3 else amari if n_act >= 1 else rojo
-            elif c == 5: # % docs
-                cell.alignment = centro
-                cell.font = Font(bold=True)
+            if c == 4 and isinstance(v, int):
+                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.fill = verde if v > 30 else amari if v >= 0 else rojo
+            elif c == 5:
+                cell.fill = fill_est; cell.alignment = centro; cell.font = Font(bold=True)
+            elif c == 6:
+                cell.alignment = centro; cell.font = Font(bold=True)
                 cell.fill = verde if indice >= 80 else amari if indice >= 50 else rojo
-            elif c == 6: # estado
-                cell.alignment = centro
-            elif r % 2 == 0:
-                cell.fill = gris_c
+            elif c == 7:
+                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.fill = verde if n_act >= 1 else rojo
+            elif r % 2 == 0 and c not in (4, 5, 6, 7):
+                cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 
-    # ── Bloque B: Detalle completo del historial (todas las fechas) ──────────
-    sep = 5 + len(df) + 3
-    ws5.merge_cells(f'A{sep}:F{sep}')
-    ws5[f'A{sep}'] = "▌ DETALLE COMPLETO DEL HISTORIAL"
+    # ── Bloque C: Estadísticas generales ───────────────────────────────────
+    sep = 13 + len(df) + 2
+    ws5.merge_cells(f'A{sep}:H{sep}')
+    ws5[f'A{sep}'] = "▌ ESTADÍSTICAS GENERALES"
     ws5[f'A{sep}'].font = Font(bold=True, size=12, color="1F4E78")
     ws5[f'A{sep}'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     ws5.row_dimensions[sep].height = 22
 
-    for c, h in enumerate(['#', 'Proveedor', 'Fecha y Hora', 'Tipo de Evento',
-                            'Días desde evento', ''], 1):
+    tiene_ultima  = sum(1 for _, r in df.iterrows()
+                        if str(r.get('ultima_actualizacion', '') or '').strip()
+                        not in ('', 'None', 'nan'))
+    tiene_proxima = sum(1 for _, r in df.iterrows()
+                        if str(r.get('proxima_actualizacion', '') or '').strip()
+                        not in ('', 'None', 'nan'))
+    pct_ult  = round(tiene_ultima  / total_prov * 100, 1) if total_prov else 0
+    pct_prox = round(tiene_proxima / total_prov * 100, 1) if total_prov else 0
+
+    for c, h in enumerate(['Indicador', 'Cantidad', '% del Total', 'Observación'], 1):
         hdr(ws5, sep + 1, c, h)
-    ws5.row_dimensions[sep + 1].height = 35
 
-    if df_hist.empty:
-        cell = ws5.cell(row=sep + 2, column=1, value="Sin registros de historial aún.")
-        cell.font = Font(italic=True, color="888888")
-        ws5.merge_cells(f'A{sep+2}:F{sep+2}')
-    else:
-        hoy = datetime.now()
-        for ri, (_, hrow) in enumerate(df_hist.iterrows(), sep + 2):
-            tipo      = str(hrow.get('tipo', ''))
-            fecha_str = str(hrow.get('fecha_actualizacion', '') or '')
-            nombre    = str(hrow.get('nombre', '') or '')
+    stats = [
+        ("Proveedores con Última Actualización registrada",
+         tiene_ultima, pct_ult,
+         "Registro histórico presente" if pct_ult == 100 else "Faltan registros"),
+        ("Proveedores con Próxima Actualización programada",
+         tiene_proxima, pct_prox,
+         "Seguimiento programado" if pct_prox == 100 else "Sin programar"),
+        ("Proveedores actualizados al menos 1 vez",
+         tiene_ultima, pct_ult,
+         "≥ 1 actualización documentada"),
+        ("Total actualizaciones registradas en el sistema",
+         tiene_ultima, "—",
+         "Suma de todas las actualizaciones únicas"),
+    ]
+    for ri, (ind, cant, pct, obs) in enumerate(stats, sep + 2):
+        for ci, v in enumerate([ind, cant, f"{pct}%" if isinstance(pct, float) else pct, obs], 1):
+            cell = ws5.cell(row=ri, column=ci, value=v)
+            cell.border = borde
+            if ci == 3 and isinstance(pct, float):
+                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.fill = verde if pct >= 80 else amari if pct >= 50 else rojo
+            if ri % 2 == 0 and ci != 3:
+                cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 
-            # Días desde ese evento
-            dt = _parse_fecha(fecha_str)
-            dias_desde = (hoy - dt).days if dt else "—"
-
-            # Color según tipo
-            fill_tipo = azul_r if tipo == 'REGISTRO' else verd_a
-            icono     = "🆕" if tipo == 'REGISTRO' else "🔄"
-
-            vals = [ri - sep - 1, nombre, fecha_str,
-                    f"{icono} {tipo}", dias_desde, ""]
-            for c, v in enumerate(vals, 1):
-                cell = ws5.cell(row=ri, column=c, value=v)
-                cell.border = borde
-                cell.fill   = fill_tipo
-                if c == 1:
-                    cell.alignment = centro
-                    cell.font = Font(bold=True)
-                elif c == 4:
-                    cell.alignment = centro
-                    cell.font = Font(bold=True)
-                elif c == 5:
-                    cell.alignment = centro
-
-    # ── Anchos ───────────────────────────────────────────────────────────────
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F'],
-                      [6, 38, 22, 22, 18, 10]):
+    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
+                      [38, 22, 22, 18, 22, 20, 20, 42]):
         ws5.column_dimensions[col].width = w
 
     wb.save(output)
@@ -942,19 +925,6 @@ def main():
                 elif indice_sel >= 50: st.warning("🟡 EN PROCESO")
                 else:                  st.error("🔴 CRÍTICO")
 
-            # ── Historial visible en la app ──────────────────────────────
-            with st.expander("🕓 Ver historial de actualizaciones"):
-                historial = db.obtener_historial(prov_id_sel)
-                if not historial:
-                    st.caption("Sin registros de historial aún.")
-                else:
-                    st.caption(f"**{len(historial)} evento(s)** registrado(s)")
-                    for i, h in enumerate(historial):
-                        icono = "🆕" if h['tipo'] == 'REGISTRO' else "🔄"
-                        st.markdown(
-                            f"`{h['fecha_actualizacion']}`  —  {icono} **{h['tipo']}**"
-                        )
-
             with st.expander("📋 Ver información completa"):
                 ic1, ic2 = st.columns(2)
                 with ic1:
@@ -989,9 +959,12 @@ def main():
                 for key, label in DOCUMENTOS.items():
                     current = bool(int(row_sel.get(key) or 0))
                     doc_edit[key] = widget_documento_pdf(
-                        db=db, proveedor_id=prov_id_sel,
-                        doc_key=key, doc_label=label,
-                        checked=current, form_key_prefix=f"e{prov_id_sel}",
+                        db=db,
+                        proveedor_id=prov_id_sel,
+                        doc_key=key,
+                        doc_label=label,
+                        checked=current,
+                        form_key_prefix=f"e{prov_id_sel}",
                     )
 
                 st.divider()
@@ -1055,7 +1028,7 @@ def main():
             if st.session_state.get('confirmar_eliminar') == prov_id_sel:
                 st.warning(
                     f"⚠️ ¿Seguro que deseas eliminar **{prov_nombre}**? "
-                    f"Se eliminarán también todos sus PDFs y su historial."
+                    f"Se eliminarán también todos sus PDFs guardados."
                 )
                 bc1, bc2 = st.columns(2)
                 with bc1:
@@ -1136,11 +1109,11 @@ def main():
             st.subheader("📥 Exportar a Excel")
             st.markdown(
                 "5 hojas: **Directorio** · **Documentos y Cumplimiento** · "
-                "**Evaluaciones** · **Informe Ejecutivo** · **Historial Actualizaciones**"
+                "**Evaluaciones** · **Informe Ejecutivo** · **Trazabilidad Actualizaciones**"
             )
             if st.button("⚙️ Generar Reporte Excel", type="primary"):
                 with st.spinner("Generando..."):
-                    excel_data = generar_excel_proveedores(df, db)
+                    excel_data = generar_excel_proveedores(df)
                 st.download_button(
                     label="📥 Descargar Reporte",
                     data=excel_data,

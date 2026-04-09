@@ -1,62 +1,42 @@
+"""
+Sistema de Gestión de Proveedores
+Versión 1.0 - Conectado a Supabase (PostgreSQL)
+Contexto: Colombia
+"""
+
 import streamlit as st
 import psycopg2
-from datetime import datetime, timedelta
+from datetime import datetime, date, timedelta
 import pandas as pd
-from PIL import Image
 import io
-import plotly.express as px
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
+import plotly.express as px
 
-# ==================== CONFIGURACIÓN DE PÁGINA ====================
-st.set_page_config(
-    page_title="Logística Cartagena",
-    layout="wide",
-    page_icon="🚛",
-    initial_sidebar_state="collapsed"
-)
+# ==================== CONFIGURACIÓN SUPABASE ====================
+SUPABASE_DB_URL = "postgresql://postgres.wiomyjrmsrhcgvhgkbqe:Conejito800$@aws-1-us-west-2.pooler.supabase.com:6543/postgres"
 
-# ==================== CREDENCIALES SUPABASE ====================
-SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
-
-# ==================== UNIDADES DE MEDIDA ====================
-UNIDADES_MEDIDA = [
-    "Toneladas (t)",
-    "Kilogramos (kg)",
-    "Libras (lb)",
-    "Sacos",
-    "Unidades",
-    "M³ (metros cúbicos)",
-]
-
-# Factores de conversión a toneladas para el dashboard
-CONVERSION_A_TONELADAS = {
-    "Toneladas (t)": 1.0,
-    "Kilogramos (kg)": 0.001,
-    "Libras (lb)": 0.000453592,
-    "Sacos": None,       # No convertible automáticamente
-    "Unidades": None,
-    "M³ (metros cúbicos)": None,
+# ==================== DOCUMENTOS REQUERIDOS ====================
+DOCUMENTOS = {
+    'doc_rut':          '1. RUT',
+    'doc_ccio':         '2. C.CIO',
+    'doc_rep_legal':    '3. C. Rep Legal',
+    'doc_cert_banca':   '4. Cert. Bancaria',
+    'doc_cert_comerc':  '5. Cert. Comercial',
+    'doc_composicion':  '6. Composición Accionaria / Certificado',
+    'doc_registro':     '7. Registro',
+    'doc_trat_datos':   '8. Autori. Trat. Datos',
+    'doc_aviso_priv':   '9. Aviso de Privacidad',
+    'doc_basc':         '10. BASC o Equivalente',
+    'doc_acuerdo_seg':  '10.1 Acuerdo Seguridad',
+    'doc_codigo_etica': '11. Divulgación Código de Ética',
+    'doc_risk':         '12. RISK / Compliance',
 }
 
-# ==================== TIPOS DE CARGA ====================
-TIPOS_CARGA = [
-    "Sacos de Arroz",
-    "Sacos de Azúcar",
-    "Sacos de Café",
-    "Sacos de Harina",
-    "Fertilizantes",
-    "Ladrillos",
-    "Cemento",
-    "Arena / Gravilla",
-    "Carbón",
-    "Contenedor",
-    "Carga General",
-    "Otro"
-]
+TOTAL_DOCS = len(DOCUMENTOS)
 
-# ==================== GESTOR DE BASE DE DATOS ====================
+
+# ==================== BASE DE DATOS ====================
 class DatabaseManager:
     def __init__(self):
         self.db_url = SUPABASE_DB_URL
@@ -69,154 +49,119 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-
             cursor.execute('''
-                CREATE TABLE IF NOT EXISTS tractomulas (
+                CREATE TABLE IF NOT EXISTS proveedores (
                     id SERIAL PRIMARY KEY,
-                    placa TEXT UNIQUE NOT NULL,
-                    tipo TEXT,
-                    conductor TEXT
+                    fecha_registro TEXT,
+                    nombre TEXT NOT NULL,
+                    tipo_bien_servicio TEXT,
+                    direccion_ciudad TEXT,
+                    telefono TEXT,
+                    contacto TEXT,
+                    correo TEXT,
+                    doc_rut INTEGER DEFAULT 0,
+                    doc_ccio INTEGER DEFAULT 0,
+                    doc_rep_legal INTEGER DEFAULT 0,
+                    doc_cert_banca INTEGER DEFAULT 0,
+                    doc_cert_comerc INTEGER DEFAULT 0,
+                    doc_composicion INTEGER DEFAULT 0,
+                    doc_registro INTEGER DEFAULT 0,
+                    doc_trat_datos INTEGER DEFAULT 0,
+                    doc_aviso_priv INTEGER DEFAULT 0,
+                    doc_basc INTEGER DEFAULT 0,
+                    doc_acuerdo_seg INTEGER DEFAULT 0,
+                    doc_codigo_etica INTEGER DEFAULT 0,
+                    doc_risk INTEGER DEFAULT 0,
+                    ultima_actualizacion TEXT,
+                    proxima_actualizacion TEXT,
+                    eval_inicial_fecha TEXT,
+                    eval_inicial_riesgo TEXT,
+                    reevaluacion TEXT,
+                    control_visitas TEXT,
+                    envio_retroalimentacion TEXT,
+                    otros_documentos TEXT
                 )
             ''')
-            try:
-                cursor.execute("ALTER TABLE tractomulas ADD COLUMN IF NOT EXISTS conductor TEXT")
-                conn.commit()
-            except:
-                conn.rollback()
-
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS operaciones_cartagena (
-                    id SERIAL PRIMARY KEY,
-                    fecha_registro TIMESTAMP DEFAULT (now() AT TIME ZONE 'America/Bogota'),
-                    fecha_operacion DATE NOT NULL,
-                    placa TEXT NOT NULL,
-                    conductor TEXT,
-                    tipo_carga TEXT,
-                    unidad_medida TEXT DEFAULT 'Toneladas (t)',
-                    descripcion TEXT,
-                    cantidad_sacos INTEGER,
-                    toneladas REAL,
-                    cantidad_texto TEXT,
-                    imagen_comprobante BYTEA,
-                    nombre_archivo TEXT
-                )
-            ''')
-
-            # Agregar columnas nuevas si no existen (para bases ya creadas)
-            for col_sql in [
-                "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS tipo_carga TEXT",
-                "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS unidad_medida TEXT DEFAULT 'Toneladas (t)'",
-                "ALTER TABLE operaciones_cartagena ADD COLUMN IF NOT EXISTS cantidad_texto TEXT",
-            ]:
-                try:
-                    cursor.execute(col_sql)
-                    conn.commit()
-                except Exception:
-                    try:
-                        conn.rollback()
-                    except Exception:
-                        pass
-
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_fecha ON operaciones_cartagena(fecha_operacion);")
-            cursor.execute("CREATE INDEX IF NOT EXISTS idx_op_placa ON operaciones_cartagena(placa);")
-
             conn.commit()
             conn.close()
         except Exception as e:
-            st.error(f"Error DB: {e}")
+            st.error(f"Error inicializando base de datos: {e}")
 
-    def obtener_datos_dashboard(self, fecha_inicio, fecha_fin):
-        conn = self.get_connection()
-        query = """
-            SELECT fecha_operacion, placa, conductor, tipo_carga, unidad_medida, cantidad_sacos, toneladas
-            FROM operaciones_cartagena
-            WHERE fecha_operacion BETWEEN %s AND %s
-            ORDER BY fecha_operacion ASC
-        """
-        try:
-            df = pd.read_sql(query, conn, params=(fecha_inicio, fecha_fin))
-            return df
-        except:
-            return pd.DataFrame()
-        finally:
-            conn.close()
-
-    def obtener_vehiculos_completo(self):
-        conn = self.get_connection()
-        try:
-            df = pd.read_sql("SELECT placa, conductor, tipo FROM tractomulas ORDER BY placa", conn)
-            return df
-        except:
-            return pd.DataFrame()
-        finally:
-            conn.close()
-
-    def guardar_vehiculo(self, placa, tipo, conductor):
+    def guardar_proveedor(self, datos):
         try:
             conn = self.get_connection()
             cursor = conn.cursor()
-            sql = """
-                INSERT INTO tractomulas (placa, tipo, conductor)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (placa)
-                DO UPDATE SET conductor = EXCLUDED.conductor, tipo = EXCLUDED.tipo
-            """
-            cursor.execute(sql, (placa, tipo, conductor))
-            conn.commit()
-            conn.close()
-            return True
-        except:
-            return False
+            hora_col = datetime.now() - timedelta(hours=5)
+            fecha_actual = hora_col.strftime('%Y-%m-%d %H:%M:%S')
 
-    def eliminar_vehiculo(self, placa):
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM tractomulas WHERE placa = %s", (placa,))
+            cursor.execute('''
+                INSERT INTO proveedores (
+                    fecha_registro, nombre, tipo_bien_servicio, direccion_ciudad,
+                    telefono, contacto, correo,
+                    doc_rut, doc_ccio, doc_rep_legal, doc_cert_banca, doc_cert_comerc,
+                    doc_composicion, doc_registro, doc_trat_datos, doc_aviso_priv,
+                    doc_basc, doc_acuerdo_seg, doc_codigo_etica, doc_risk,
+                    ultima_actualizacion, proxima_actualizacion,
+                    eval_inicial_fecha, eval_inicial_riesgo,
+                    reevaluacion, control_visitas, envio_retroalimentacion, otros_documentos
+                ) VALUES (
+                    %s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,
+                    %s,%s,%s,%s,%s,%s,%s,%s
+                ) RETURNING id
+            ''', (
+                fecha_actual,
+                datos['nombre'], datos['tipo_bien_servicio'], datos['direccion_ciudad'],
+                datos['telefono'], datos['contacto'], datos['correo'],
+                datos['doc_rut'], datos['doc_ccio'], datos['doc_rep_legal'],
+                datos['doc_cert_banca'], datos['doc_cert_comerc'], datos['doc_composicion'],
+                datos['doc_registro'], datos['doc_trat_datos'], datos['doc_aviso_priv'],
+                datos['doc_basc'], datos['doc_acuerdo_seg'], datos['doc_codigo_etica'],
+                datos['doc_risk'],
+                datos['ultima_actualizacion'], datos['proxima_actualizacion'],
+                datos['eval_inicial_fecha'], datos['eval_inicial_riesgo'],
+                datos['reevaluacion'], datos['control_visitas'],
+                datos['envio_retroalimentacion'], datos['otros_documentos']
+            ))
+            result = cursor.fetchone()
             conn.commit()
             conn.close()
-            return True
-        except:
-            return False
-
-    def guardar_operacion(self, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, cantidad_texto, imagen_bytes, nombre_archivo):
-        try:
-            conn = self.get_connection()
-            cursor = conn.cursor()
-            cantidad = float(cantidad) if cantidad else 0.0
-            sacos = int(sacos) if sacos else 0
-            factor = CONVERSION_A_TONELADAS.get(unidad_medida)
-            toneladas = round(cantidad * factor, 4) if factor else None
-            sql = '''
-                INSERT INTO operaciones_cartagena
-                (fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion, cantidad_sacos, toneladas, cantidad_texto, imagen_comprobante, nombre_archivo)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            '''
-            if imagen_bytes:
-                imagen_bytes = psycopg2.Binary(imagen_bytes)
-            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, cantidad_texto, imagen_bytes, nombre_archivo))
-            conn.commit()
-            conn.close()
-            return True
+            return result[0] if result else None
         except Exception as e:
-            st.error(f"Error guardando: {e}")
-            return False
+            st.error(f"Error guardando proveedor: {e}")
+            return None
 
-    def actualizar_operacion(self, registro_id, fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, cantidad, cantidad_texto):
+    def actualizar_proveedor(self, proveedor_id, datos):
         try:
-            cantidad = float(cantidad) if cantidad else 0.0
-            sacos = int(sacos) if sacos else 0
-            factor = CONVERSION_A_TONELADAS.get(unidad_medida)
-            toneladas = round(cantidad * factor, 4) if factor else None
             conn = self.get_connection()
             cursor = conn.cursor()
-            sql = '''
-                UPDATE operaciones_cartagena
-                SET fecha_operacion=%s, placa=%s, conductor=%s, tipo_carga=%s, unidad_medida=%s,
-                    descripcion=%s, cantidad_sacos=%s, toneladas=%s, cantidad_texto=%s
+            cursor.execute('''
+                UPDATE proveedores SET
+                    nombre=%s, tipo_bien_servicio=%s, direccion_ciudad=%s,
+                    telefono=%s, contacto=%s, correo=%s,
+                    doc_rut=%s, doc_ccio=%s, doc_rep_legal=%s, doc_cert_banca=%s,
+                    doc_cert_comerc=%s, doc_composicion=%s, doc_registro=%s,
+                    doc_trat_datos=%s, doc_aviso_priv=%s, doc_basc=%s,
+                    doc_acuerdo_seg=%s, doc_codigo_etica=%s, doc_risk=%s,
+                    ultima_actualizacion=%s, proxima_actualizacion=%s,
+                    eval_inicial_fecha=%s, eval_inicial_riesgo=%s,
+                    reevaluacion=%s, control_visitas=%s,
+                    envio_retroalimentacion=%s, otros_documentos=%s
                 WHERE id=%s
-            '''
-            cursor.execute(sql, (fecha, placa, conductor, tipo_carga, unidad_medida, descripcion, sacos, toneladas, cantidad_texto, registro_id))
+            ''', (
+                datos['nombre'], datos['tipo_bien_servicio'], datos['direccion_ciudad'],
+                datos['telefono'], datos['contacto'], datos['correo'],
+                datos['doc_rut'], datos['doc_ccio'], datos['doc_rep_legal'],
+                datos['doc_cert_banca'], datos['doc_cert_comerc'], datos['doc_composicion'],
+                datos['doc_registro'], datos['doc_trat_datos'], datos['doc_aviso_priv'],
+                datos['doc_basc'], datos['doc_acuerdo_seg'], datos['doc_codigo_etica'],
+                datos['doc_risk'],
+                datos['ultima_actualizacion'], datos['proxima_actualizacion'],
+                datos['eval_inicial_fecha'], datos['eval_inicial_riesgo'],
+                datos['reevaluacion'], datos['control_visitas'],
+                datos['envio_retroalimentacion'], datos['otros_documentos'],
+                proveedor_id
+            ))
             conn.commit()
             conn.close()
             return True
@@ -224,663 +169,733 @@ class DatabaseManager:
             st.error(f"Error actualizando: {e}")
             return False
 
-    def obtener_historial(self, fecha_inicio=None, fecha_fin=None, placa=None, conductor=None, tipo_carga=None):
-        conn = self.get_connection()
-        query = """
-            SELECT id, fecha_operacion, placa, conductor, tipo_carga, unidad_medida, descripcion,
-                   cantidad_sacos, toneladas, cantidad_texto, nombre_archivo
-            FROM operaciones_cartagena
-            WHERE 1=1
-        """
-        params = []
-        if fecha_inicio:
-            query += " AND fecha_operacion >= %s"
-            params.append(fecha_inicio)
-        if fecha_fin:
-            query += " AND fecha_operacion <= %s"
-            params.append(fecha_fin)
-        if placa and placa != "Todas":
-            query += " AND placa = %s"
-            params.append(placa)
-        if conductor:
-            query += " AND conductor ILIKE %s"
-            params.append(f"%{conductor}%")
-        if tipo_carga and tipo_carga != "Todos":
-            query += " AND tipo_carga = %s"
-            params.append(tipo_carga)
-
-        query += " ORDER BY fecha_operacion DESC, id DESC"
-
-        try:
-            df = pd.read_sql(query, conn, params=params)
-            return df
-        except:
-            return pd.DataFrame()
-        finally:
-            conn.close()
-
-    def obtener_imagen(self, registro_id):
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT imagen_comprobante FROM operaciones_cartagena WHERE id = %s", (registro_id,))
-        result = cursor.fetchone()
-        conn.close()
-        if result and result[0]:
-            return bytes(result[0])
-        return None
-
-    def eliminar_registro(self, registro_id):
+    def obtener_proveedores(self):
         try:
             conn = self.get_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM operaciones_cartagena WHERE id = %s", (registro_id,))
-            conn.commit()
+            df = pd.read_sql_query("SELECT * FROM proveedores ORDER BY nombre", conn)
             conn.close()
-            return True
-        except:
-            return False
+            return df
+        except Exception as e:
+            st.error(f"Error obteniendo proveedores: {e}")
+            return pd.DataFrame()
+
+    def eliminar_proveedor(self, proveedor_id):
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM proveedores WHERE id = %s", (proveedor_id,))
+        conn.commit()
+        conn.close()
 
 
-# ==================== UTILIDADES ====================
-def procesar_imagen(uploaded_file):
-    if uploaded_file is None:
-        return None
-    try:
-        image = Image.open(uploaded_file)
-        if image.mode in ("RGBA", "P"):
-            image = image.convert("RGB")
-        max_width = 1024
-        if image.width > max_width:
-            ratio = max_width / image.width
-            new_height = int(image.height * ratio)
-            image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='JPEG', quality=70)
-        return img_byte_arr.getvalue()
-    except Exception as e:
-        st.error(f"Error imagen: {e}")
-        return None
+# ==================== FUNCIONES AUXILIARES ====================
+def calcular_indice(row):
+    """Calcula el % de documentos entregados"""
+    doc_cols = list(DOCUMENTOS.keys())
+    entregados = sum(1 for col in doc_cols if int(row.get(col, 0)) == 1)
+    return round((entregados / TOTAL_DOCS) * 100, 1)
 
 
-def parse_cantidad(texto: str) -> float:
-    """
-    Convierte texto de cantidad en formato colombiano o internacional a float.
-    Ejemplos válidos:
-      28.910,00  → 28910.0
-      28,910.00  → 28910.0
-      28900      → 28900.0
-      1.500      → 1500.0
-      1,5        → 1.5
-    """
-    texto = str(texto).strip().replace(" ", "")
-    if not texto or texto == "0":
-        return 0.0
-
-    tiene_punto = "." in texto
-    tiene_coma = "," in texto
-
-    if tiene_punto and tiene_coma:
-        # Determinar cuál es separador de miles y cuál decimal
-        pos_punto = texto.rfind(".")
-        pos_coma = texto.rfind(",")
-        if pos_coma > pos_punto:
-            # Formato colombiano: 28.910,00
-            texto = texto.replace(".", "").replace(",", ".")
-        else:
-            # Formato inglés: 28,910.00
-            texto = texto.replace(",", "")
-    elif tiene_coma:
-        partes = texto.split(",")
-        if len(partes) == 2 and len(partes[1]) <= 2:
-            # Es decimal: 28,90 → 28.90
-            texto = texto.replace(",", ".")
-        else:
-            # Es separador de miles: 28,900 → 28900
-            texto = texto.replace(",", "")
-    elif tiene_punto:
-        partes = texto.split(".")
-        if len(partes) == 2 and len(partes[1]) <= 2:
-            # Es decimal: 28.90
-            pass
-        else:
-            # Es separador de miles: 28.900 → 28900
-            texto = texto.replace(".", "")
-
-    try:
-        return float(texto)
-    except ValueError:
-        return 0.0
+def color_indice(pct):
+    if pct >= 80:
+        return "🟢"
+    elif pct >= 50:
+        return "🟡"
+    return "🔴"
 
 
-
-    if uploaded_file is None:
-        return None
-    try:
-        image = Image.open(uploaded_file)
-        if image.mode in ("RGBA", "P"):
-            image = image.convert("RGB")
-        max_width = 1024
-        if image.width > max_width:
-            ratio = max_width / image.width
-            new_height = int(image.height * ratio)
-            image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='JPEG', quality=70)
-        return img_byte_arr.getvalue()
-    except Exception as e:
-        st.error(f"Error imagen: {e}")
-        return None
+def estado_texto(pct):
+    if pct >= 80:
+        return "COMPLETO"
+    elif pct >= 50:
+        return "EN PROCESO"
+    return "CRÍTICO"
 
 
-def generar_excel(df: pd.DataFrame, titulo: str = "Informe Operaciones") -> bytes:
-    """Genera un Excel profesional con formato a partir de un DataFrame"""
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Operaciones"
-
-    # Estilos
-    color_header = "1F4E79"
-    color_subheader = "2E75B6"
-    color_alt = "D6E4F0"
-
-    font_titulo = Font(name="Arial", bold=True, size=14, color="FFFFFF")
-    font_header = Font(name="Arial", bold=True, size=10, color="FFFFFF")
-    font_normal = Font(name="Arial", size=9)
-    font_total = Font(name="Arial", bold=True, size=10)
-
-    fill_titulo = PatternFill("solid", start_color=color_header)
-    fill_header = PatternFill("solid", start_color=color_subheader)
-    fill_alt = PatternFill("solid", start_color=color_alt)
-    fill_total = PatternFill("solid", start_color="BDD7EE")
-
-    border_thin = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
-
-    align_center = Alignment(horizontal="center", vertical="center")
-    align_left = Alignment(horizontal="left", vertical="center")
-
-    # --- FILA TÍTULO ---
-    ws.merge_cells("A1:I1")
-    ws["A1"] = f"🚛 {titulo}"
-    ws["A1"].font = font_titulo
-    ws["A1"].fill = fill_titulo
-    ws["A1"].alignment = align_center
-    ws.row_dimensions[1].height = 28
-
-    # --- FILA FECHA GENERACIÓN ---
-    ws.merge_cells("A2:I2")
-    ws["A2"] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}  |  Total registros: {len(df)}"
-    ws["A2"].font = Font(name="Arial", italic=True, size=9, color="555555")
-    ws["A2"].alignment = align_center
-    ws.row_dimensions[2].height = 16
-
-    ws.append([])  # fila vacía
-
-    # --- ENCABEZADOS ---
-    columnas = {
-        "fecha_operacion": "Fecha",
-        "placa": "Placa",
-        "conductor": "Conductor",
-        "tipo_carga": "Tipo de Carga",
-        "cantidad_texto": "Cantidad",
-        "unidad_medida": "Unidad",
-        "toneladas": "Toneladas",
-        "descripcion": "Descripción",
-    }
-
-    col_keys = [k for k in columnas.keys() if k in df.columns]
-    col_names = [columnas[k] for k in col_keys]
-
-    header_row = 4
-    for col_idx, name in enumerate(col_names, start=1):
-        cell = ws.cell(row=header_row, column=col_idx, value=name)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = align_center
-        cell.border = border_thin
-    ws.row_dimensions[header_row].height = 20
-
-    # --- DATOS ---
-    for row_idx, (_, row) in enumerate(df[col_keys].iterrows(), start=header_row + 1):
-        fill_row = fill_alt if row_idx % 2 == 0 else None
-        for col_idx, key in enumerate(col_keys, start=1):
-            val = row[key]
-            if pd.isna(val):
-                val = ""
-            cell = ws.cell(row=row_idx, column=col_idx, value=val)
-            cell.font = font_normal
-            cell.border = border_thin
-            cell.alignment = align_center if key in ("fecha_operacion", "placa", "cantidad_sacos", "toneladas") else align_left
-            if fill_row:
-                cell.fill = fill_row
-
-    # --- COLUMNA OCULTA CON VALOR NUMÉRICO DE CANTIDAD ---
-    num_cols = len(col_keys)
-    col_num_cantidad = num_cols + 1
-    col_num_letra = get_column_letter(col_num_cantidad)
-    if "cantidad_texto" in df.columns:
-        for i, val in enumerate(df["cantidad_texto"].tolist(), start=header_row + 1):
-            num_val = parse_cantidad(str(val)) if val else 0.0
-            ws.cell(row=i, column=col_num_cantidad, value=num_val).number_format = '#,##0.00'
-        ws.column_dimensions[col_num_letra].hidden = True
-
-    # --- FILA TOTALES ---
-    total_row = header_row + len(df) + 1
-    ws.cell(row=total_row, column=1, value="TOTALES").font = font_total
-    ws.cell(row=total_row, column=1).fill = fill_total
-    ws.cell(row=total_row, column=1).alignment = align_center
-
-    # Total cantidad (suma usando columna oculta numérica)
-    if "cantidad_texto" in col_keys:
-        cant_col = col_keys.index("cantidad_texto") + 1
-        cell_cant = ws.cell(row=total_row, column=cant_col)
-        cell_cant.value = f"=SUM({col_num_letra}{header_row+1}:{col_num_letra}{total_row-1})"
-        cell_cant.number_format = '#,##0.00'
-        cell_cant.font = font_total
-        cell_cant.fill = fill_total
-        cell_cant.border = border_thin
-        cell_cant.alignment = align_center
-
-    # Total toneladas
-    if "toneladas" in col_keys:
-        ton_col = col_keys.index("toneladas") + 1
-        ton_letter = get_column_letter(ton_col)
-        cell_ton = ws.cell(row=total_row, column=ton_col)
-        cell_ton.value = f"=SUM({ton_letter}{header_row+1}:{ton_letter}{total_row-1})"
-        cell_ton.font = font_total
-        cell_ton.fill = fill_total
-        cell_ton.border = border_thin
-        cell_ton.alignment = align_center
-        for r in range(header_row + 1, total_row + 1):
-            ws.cell(r, ton_col).number_format = '#,##0.00'
-
-    # --- ANCHO DE COLUMNAS ---
-    anchos = {
-        "fecha_operacion": 14, "placa": 12, "conductor": 22,
-        "tipo_carga": 22, "cantidad_texto": 16, "unidad_medida": 18,
-        "toneladas": 14, "descripcion": 35,
-    }
-    for col_idx, key in enumerate(col_keys, start=1):
-        ws.column_dimensions[get_column_letter(col_idx)].width = anchos.get(key, 15)
-
-    # --- HOJA RESUMEN ---
-    ws2 = wb.create_sheet("Resumen")
-    ws2["A1"] = "Resumen por Tipo de Carga"
-    ws2["A1"].font = Font(name="Arial", bold=True, size=12, color="FFFFFF")
-    ws2["A1"].fill = fill_titulo
-    ws2.merge_cells("A1:E1")
-    ws2["A1"].alignment = align_center
-
-    for col, titulo in zip(["A2","B2","C2","D2","E2"], ["Tipo de Carga","Viajes","Total Cantidad","Unidad","Total Toneladas"]):
-        ws2[col] = titulo
-        ws2[col].font = font_header
-        ws2[col].fill = fill_header
-        ws2[col].alignment = align_center
-        ws2[col].border = border_thin
-
-    if "tipo_carga" in df.columns:
-        df["_cant_num"] = df["cantidad_texto"].apply(lambda x: parse_cantidad(str(x)) if x else 0.0)
-        resumen = df.groupby("tipo_carga").agg(
-            viajes=("id", "count"),
-            cantidad_num=("_cant_num", "sum"),
-            toneladas=("toneladas", "sum")
-        ).reset_index()
-        unidad_por_tipo = df.groupby("tipo_carga")["unidad_medida"].agg(
-            lambda x: x.mode()[0] if len(x) > 0 else ""
-        ).to_dict() if "unidad_medida" in df.columns else {}
-
-        for r_idx, row in resumen.iterrows():
-            r = r_idx + 3
-            ton_val = row["toneladas"]
-            ton_display = round(float(ton_val), 2) if ton_val and not pd.isna(ton_val) else 0.0
-            ws2.cell(r, 1, row["tipo_carga"]).border = border_thin
-            ws2.cell(r, 2, int(row["viajes"])).border = border_thin
-            c3 = ws2.cell(r, 3, round(float(row["cantidad_num"]), 2))
-            c3.border = border_thin
-            c3.number_format = '#,##0.00'
-            ws2.cell(r, 4, unidad_por_tipo.get(row["tipo_carga"], "")).border = border_thin
-            c5 = ws2.cell(r, 5, ton_display)
-            c5.border = border_thin
-            c5.number_format = '#,##0.00'
-            for c in range(1, 6):
-                ws2.cell(r, c).font = font_normal
-                ws2.cell(r, c).alignment = align_center
-
-        # Fila TOTAL en resumen
-        total_r = len(resumen) + 3
-        ws2.cell(total_r, 1, "TOTAL").font = font_total
-        ws2.cell(total_r, 1).fill = fill_total
-        ws2.cell(total_r, 1).alignment = align_center
-        c3t = ws2.cell(total_r, 3, round(float(df["_cant_num"].sum()), 2))
-        c3t.font = font_total; c3t.fill = fill_total; c3t.number_format = '#,##0.00'; c3t.alignment = align_center
-        ton_tot = df["toneladas"].sum()
-        c5t = ws2.cell(total_r, 5, round(float(ton_tot), 2) if not pd.isna(ton_tot) else 0.0)
-        c5t.font = font_total; c5t.fill = fill_total; c5t.number_format = '#,##0.00'; c5t.alignment = align_center
-        df.drop(columns=["_cant_num"], inplace=True)
-
-    for col_letter, width in zip(["A","B","C","D","E"], [25, 10, 16, 20, 16]):
-        ws2.column_dimensions[col_letter].width = width
-
+# ==================== GENERADOR EXCEL ====================
+def generar_excel_proveedores(df):
     output = io.BytesIO()
+    wb = Workbook()
+
+    # ----- Estilos globales -----
+    h_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    h_font = Font(color="FFFFFF", bold=True, size=11)
+    verde  = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    rojo   = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    amari  = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    azul_c = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
+    borde  = Border(
+        left=Side(style='thin'), right=Side(style='thin'),
+        top=Side(style='thin'),  bottom=Side(style='thin')
+    )
+    centro = Alignment(horizontal='center', vertical='center')
+
+    # ============================================================
+    # HOJA 1 – DIRECTORIO DE PROVEEDORES
+    # ============================================================
+    ws1 = wb.active
+    ws1.title = "Directorio Proveedores"
+
+    ws1.merge_cells('A1:G1')
+    ws1['A1'] = "DIRECTORIO DE PROVEEDORES"
+    ws1['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws1['A1'].alignment = centro
+    ws1.row_dimensions[1].height = 30
+
+    ws1.merge_cells('A2:G2')
+    ws1['A2'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   Total proveedores: {len(df)}"
+    ws1['A2'].alignment = centro
+    ws1['A2'].font = Font(italic=True, color="555555")
+
+    hdrs1 = ['Nombre Proveedor', 'Tipo Bien / Servicio', 'Dirección / Ciudad',
+             'Teléfono / Celular', 'Contacto', 'Correo Electrónico', 'Fecha Registro']
+    for c, h in enumerate(hdrs1, 1):
+        cell = ws1.cell(row=4, column=c, value=h)
+        cell.font = h_font; cell.fill = h_fill
+        cell.alignment = centro; cell.border = borde
+    ws1.row_dimensions[4].height = 20
+
+    for r, (_, row) in enumerate(df.iterrows(), 5):
+        for c, f in enumerate(['nombre','tipo_bien_servicio','direccion_ciudad',
+                                'telefono','contacto','correo','fecha_registro'], 1):
+            cell = ws1.cell(row=r, column=c, value=str(row.get(f, '') or ''))
+            cell.border = borde
+            cell.fill = azul_c if r % 2 == 0 else PatternFill()
+
+    for col, w in zip(['A','B','C','D','E','F','G'], [35,25,28,18,25,30,20]):
+        ws1.column_dimensions[col].width = w
+
+    # ============================================================
+    # HOJA 2 – ESTADO DOCUMENTAL
+    # ============================================================
+    ws2 = wb.create_sheet("Documentos y Cumplimiento")
+    total_cols = 2 + TOTAL_DOCS + 2   # nombre + % + docs + 2 fechas
+
+    ws2.merge_cells(f'A1:{chr(64+total_cols)}1')
+    ws2['A1'] = "ESTADO DOCUMENTAL POR PROVEEDOR"
+    ws2['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws2['A1'].alignment = centro
+    ws2.row_dimensions[1].height = 30
+
+    hdrs2 = (['Proveedor', '% Índice Documental']
+             + list(DOCUMENTOS.values())
+             + ['Última Actualización', 'Próxima Actualización'])
+    for c, h in enumerate(hdrs2, 1):
+        cell = ws2.cell(row=3, column=c, value=h)
+        cell.font = h_font; cell.fill = h_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = borde
+    ws2.row_dimensions[3].height = 55
+
+    for r, (_, row) in enumerate(df.iterrows(), 4):
+        indice = calcular_indice(row)
+
+        # Nombre
+        c1 = ws2.cell(row=r, column=1, value=str(row.get('nombre', '')))
+        c1.border = borde; c1.font = Font(bold=True)
+
+        # % Índice
+        c2 = ws2.cell(row=r, column=2, value=f"{indice}%")
+        c2.alignment = centro; c2.border = borde; c2.font = Font(bold=True)
+        c2.fill = verde if indice >= 80 else amari if indice >= 50 else rojo
+
+        # Documentos
+        for ci, key in enumerate(DOCUMENTOS.keys(), 3):
+            val = int(row.get(key, 0))
+            cell = ws2.cell(row=r, column=ci, value="✓ SÍ" if val else "✗ NO")
+            cell.alignment = centro; cell.border = borde
+            cell.fill = verde if val else rojo
+
+        # Fechas
+        col_ua = 3 + TOTAL_DOCS
+        ws2.cell(row=r, column=col_ua,   value=str(row.get('ultima_actualizacion','') or '')).border = borde
+        ws2.cell(row=r, column=col_ua+1, value=str(row.get('proxima_actualizacion','') or '')).border = borde
+
+    ws2.column_dimensions['A'].width = 32
+    ws2.column_dimensions['B'].width = 18
+    for i in range(3, total_cols + 1):
+        letra = chr(64 + i) if i <= 26 else 'A' + chr(64 + i - 26)
+        try:
+            ws2.column_dimensions[letra].width = 13
+        except Exception:
+            pass
+
+    # ============================================================
+    # HOJA 3 – EVALUACIONES Y CONTROL
+    # ============================================================
+    ws3 = wb.create_sheet("Evaluaciones y Control")
+
+    ws3.merge_cells('A1:G1')
+    ws3['A1'] = "EVALUACIONES Y CONTROL DE PROVEEDORES"
+    ws3['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws3['A1'].alignment = centro
+    ws3.row_dimensions[1].height = 30
+
+    hdrs3 = ['Proveedor', '13. Eval. Inicial (Riesgo)', '13. Fecha Eval. Inicial',
+             '14. Reevaluación', '15. Control de Visitas',
+             '16. Envío Retroalimentación', '17. Otros Documentos']
+    for c, h in enumerate(hdrs3, 1):
+        cell = ws3.cell(row=3, column=c, value=h)
+        cell.font = h_font; cell.fill = h_fill
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = borde
+    ws3.row_dimensions[3].height = 40
+
+    riesgo_color = {'ALTO': rojo, 'MEDIO': amari, 'BAJO': verde}
+
+    for r, (_, row) in enumerate(df.iterrows(), 4):
+        riesgo = str(row.get('eval_inicial_riesgo', '') or '')
+        vals = [
+            row.get('nombre',''),
+            riesgo,
+            row.get('eval_inicial_fecha',''),
+            row.get('reevaluacion',''),
+            row.get('control_visitas',''),
+            row.get('envio_retroalimentacion',''),
+            row.get('otros_documentos',''),
+        ]
+        for ci, v in enumerate(vals, 1):
+            cell = ws3.cell(row=r, column=ci, value=str(v) if v else '')
+            cell.border = borde
+            if ci == 2 and riesgo in riesgo_color:
+                cell.fill = riesgo_color[riesgo]
+                cell.font = Font(bold=True)
+                cell.alignment = centro
+
+    for col, w in zip(['A','B','C','D','E','F','G'], [32,20,20,24,24,24,28]):
+        ws3.column_dimensions[col].width = w
+
+    # ============================================================
+    # HOJA 4 – INFORME EJECUTIVO
+    # ============================================================
+    ws4 = wb.create_sheet("Informe Ejecutivo")
+
+    # Título grande
+    ws4.merge_cells('A1:F1')
+    ws4['A1'] = "INFORME EJECUTIVO — GESTIÓN DE PROVEEDORES"
+    ws4['A1'].font = Font(size=16, bold=True, color="FFFFFF")
+    ws4['A1'].fill = h_fill
+    ws4['A1'].alignment = centro
+    ws4.row_dimensions[1].height = 35
+
+    ws4.merge_cells('A2:F2')
+    ws4['A2'] = f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   Total Proveedores: {len(df)}"
+    ws4['A2'].alignment = centro
+    ws4['A2'].font = Font(italic=True, color="444444")
+
+    # --- KPIs ---
+    indices_list = [calcular_indice(row) for _, row in df.iterrows()]
+    prom_indice       = sum(indices_list) / len(indices_list) if indices_list else 0
+    n_criticos        = sum(1 for i in indices_list if i < 50)
+    n_proceso         = sum(1 for i in indices_list if 50 <= i < 80)
+    n_completos       = sum(1 for i in indices_list if i >= 80)
+    pct_completos     = round(n_completos / len(df) * 100, 1) if len(df) > 0 else 0
+
+    ws4.cell(row=4, column=1).value = "INDICADORES CLAVE DE DESEMPEÑO"
+    ws4.cell(row=4, column=1).font = Font(bold=True, size=12, color="1F4E78")
+    ws4.merge_cells('A4:F4')
+    ws4.row_dimensions[4].height = 22
+
+    kpis = [
+        ("Total de Proveedores Registrados",          len(df),              None),
+        ("Índice Promedio de Cumplimiento Documental", f"{prom_indice:.1f}%", prom_indice),
+        ("Proveedores Completos (≥ 80%)",              n_completos,          100),
+        ("Proveedores En Proceso (50%–79%)",           n_proceso,            50),
+        ("Proveedores Críticos (< 50%)",               n_criticos,           0),
+        ("% de Proveedores Completamente Certificados",f"{pct_completos:.1f}%", pct_completos),
+    ]
+
+    for i, (label, valor, nivel) in enumerate(kpis, 5):
+        cell_l = ws4.cell(row=i, column=1, value=label)
+        cell_l.font = Font(bold=True); cell_l.border = borde
+        cell_l.fill = azul_c
+        ws4.merge_cells(f'A{i}:D{i}')
+
+        cell_v = ws4.cell(row=i, column=5, value=valor)
+        cell_v.alignment = centro; cell_v.border = borde
+        cell_v.font = Font(bold=True, size=12)
+        if nivel is not None:
+            cell_v.fill = verde if nivel >= 80 else amari if nivel >= 50 else rojo
+        ws4.merge_cells(f'E{i}:F{i}')
+
+    # --- Ranking ---
+    row_rank = 5 + len(kpis) + 2
+    ws4.cell(row=row_rank, column=1).value = "RANKING DE CUMPLIMIENTO DOCUMENTAL"
+    ws4.cell(row=row_rank, column=1).font = Font(bold=True, size=12, color="1F4E78")
+    ws4.merge_cells(f'A{row_rank}:F{row_rank}')
+
+    rk_headers = ['#', 'Proveedor', 'Tipo Bien / Servicio', '% Cumplimiento', 'Estado', 'Docs Entregados']
+    for c, h in enumerate(rk_headers, 1):
+        cell = ws4.cell(row=row_rank+1, column=c, value=h)
+        cell.font = h_font; cell.fill = h_fill
+        cell.alignment = centro; cell.border = borde
+
+    df_rk = df.copy()
+    df_rk['_idx'] = indices_list
+    df_rk = df_rk.sort_values('_idx', ascending=False).reset_index(drop=True)
+
+    for ri, (_, row) in enumerate(df_rk.iterrows(), row_rank+2):
+        ind = row['_idx']
+        docs_ok = sum(1 for k in DOCUMENTOS if int(row.get(k, 0)) == 1)
+        estado = "✅ COMPLETO" if ind >= 80 else "⚠️ EN PROCESO" if ind >= 50 else "❌ CRÍTICO"
+
+        vals_rk = [ri - row_rank - 1,
+                   row.get('nombre',''),
+                   row.get('tipo_bien_servicio',''),
+                   f"{ind}%",
+                   estado,
+                   f"{docs_ok} / {TOTAL_DOCS}"]
+
+        for ci, v in enumerate(vals_rk, 1):
+            cell = ws4.cell(row=ri, column=ci, value=v)
+            cell.border = borde
+            if ci == 4:
+                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.fill = verde if ind >= 80 else amari if ind >= 50 else rojo
+            elif ci == 5:
+                cell.alignment = centro
+
+    # --- Análisis por documento ---
+    row_doc = row_rank + len(df_rk) + 4
+    ws4.cell(row=row_doc, column=1).value = "ANÁLISIS DE ENTREGA POR DOCUMENTO"
+    ws4.cell(row=row_doc, column=1).font = Font(bold=True, size=12, color="1F4E78")
+    ws4.merge_cells(f'A{row_doc}:F{row_doc}')
+
+    doc_hdrs = ['Documento', 'Proveedores con Doc.', 'Total Proveedores', '% Entrega', 'Faltantes']
+    for c, h in enumerate(doc_hdrs, 1):
+        cell = ws4.cell(row=row_doc+1, column=c, value=h)
+        cell.font = h_font; cell.fill = h_fill
+        cell.alignment = centro; cell.border = borde
+
+    for di, (key, label) in enumerate(DOCUMENTOS.items(), row_doc+2):
+        entregados = int(df[key].sum()) if key in df.columns else 0
+        faltantes  = len(df) - entregados
+        pct_doc    = round(entregados / len(df) * 100, 1) if len(df) > 0 else 0
+
+        vals_d = [label, entregados, len(df), f"{pct_doc}%", faltantes]
+        for ci, v in enumerate(vals_d, 1):
+            cell = ws4.cell(row=di, column=ci, value=v)
+            cell.border = borde
+            if ci == 4:
+                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.fill = verde if pct_doc >= 80 else amari if pct_doc >= 50 else rojo
+
+    for col, w in zip(['A','B','C','D','E','F'], [38,22,18,16,18,18]):
+        ws4.column_dimensions[col].width = w
+
     wb.save(output)
-    return output.getvalue()
+    output.seek(0)
+    return output
 
 
 # ==================== MAIN ====================
 def main():
-    st.title("🚛 Operaciones Cartagena")
+    st.set_page_config(
+        page_title="Gestión de Proveedores",
+        layout="wide",
+        page_icon="🏢"
+    )
+
+    st.title("🏢 Sistema de Gestión de Proveedores")
+    st.markdown("**Control Documental, Evaluación y Trazabilidad de Proveedores**")
 
     if 'db' not in st.session_state:
-        st.session_state.db = DatabaseManager()
-    if 'editando_id' not in st.session_state:
-        st.session_state.editando_id = None
+        with st.spinner("Conectando a la base de datos..."):
+            st.session_state.db = DatabaseManager()
 
     db = st.session_state.db
 
-    tab0, tab1, tab2, tab3 = st.tabs(["📊 Dashboard Gerencial", "📝 Nuevo Registro", "🔍 Historial Detallado", "🚛 Gestión Vehículos"])
+    tab1, tab2, tab3 = st.tabs([
+        "➕ Nuevo Proveedor",
+        "📋 Lista de Proveedores",
+        "📊 Reportes y Exportación"
+    ])
 
-    # ============ TAB 0: DASHBOARD ============
-    with tab0:
-        st.markdown("### 📈 Resumen de Operaciones")
-
-        col_filtro1, col_filtro2 = st.columns([2, 4])
-        with col_filtro1:
-            mes_actual = datetime.now()
-            inicio_mes = mes_actual.replace(day=1)
-            rango_fechas = st.date_input(
-                "Rango de Análisis",
-                value=(inicio_mes, mes_actual),
-                key="dash_dates"
-            )
-
-        if isinstance(rango_fechas, tuple) and len(rango_fechas) == 2:
-            f_start, f_end = rango_fechas
-            df_dash = db.obtener_datos_dashboard(f_start, f_end)
-
-            if not df_dash.empty:
-                total_ton = df_dash['toneladas'].sum()
-                total_sacos = df_dash['cantidad_sacos'].sum()
-                total_viajes = len(df_dash)
-
-                k1, k2, k3 = st.columns(3)
-                k1.metric("⚖️ Toneladas Movidas", f"{total_ton:,.2f}")
-                k2.metric("📦 Sacos Movidos", f"{int(total_sacos):,}".replace(",", "."))
-                k3.metric("🚚 Viajes Realizados", total_viajes)
-
-                st.divider()
-
-                c_chart1, c_chart2 = st.columns(2)
-
-                with c_chart1:
-                    st.subheader("🚛 Toneladas por Vehículo")
-                    df_placa = df_dash.groupby("placa")['toneladas'].sum().reset_index().sort_values('toneladas', ascending=True)
-                    fig_placa = px.bar(df_placa, x='toneladas', y='placa', orientation='h', text_auto='.2s', color='toneladas')
-                    st.plotly_chart(fig_placa, use_container_width=True)
-
-                with c_chart2:
-                    st.subheader("📦 Toneladas por Tipo de Carga")
-                    if 'tipo_carga' in df_dash.columns and df_dash['tipo_carga'].notna().any():
-                        df_tipo = df_dash.groupby("tipo_carga")['toneladas'].sum().reset_index()
-                        fig_tipo = px.pie(df_tipo, values='toneladas', names='tipo_carga', hole=0.4)
-                        st.plotly_chart(fig_tipo, use_container_width=True)
-                    else:
-                        st.info("Sin datos de tipo de carga aún.")
-
-                st.subheader("📆 Evolución Diaria de Toneladas")
-                df_dia = df_dash.groupby("fecha_operacion")['toneladas'].sum().reset_index()
-                fig_dia = px.line(df_dia, x='fecha_operacion', y='toneladas', markers=True)
-                st.plotly_chart(fig_dia, use_container_width=True)
-
-            else:
-                st.info("No hay datos registrados en este rango de fechas.")
-        else:
-            st.info("Selecciona una fecha de inicio y fin para ver el reporte.")
-
-    # ============ TAB 1: REGISTRO ============
+    # ===========================================================
+    # TAB 1 – NUEVO PROVEEDOR
+    # ===========================================================
     with tab1:
-        st.markdown("### Registrar Movimiento")
+        st.header("Registro de Nuevo Proveedor")
 
-        df_vehiculos = db.obtener_vehiculos_completo()
-        lista_placas = []
-        mapa_conductores = {}
+        with st.form("form_proveedor", clear_on_submit=True):
 
-        if not df_vehiculos.empty:
-            lista_placas = df_vehiculos['placa'].tolist()
-            mapa_conductores = {
-                row['placa']: (row['conductor'] if row['conductor'] else "")
-                for _, row in df_vehiculos.iterrows()
-            }
+            # ---- Información General ----
+            st.subheader("📌 Información General")
+            col1, col2 = st.columns(2)
+            with col1:
+                nombre = st.text_input("Nombre del Proveedor *", placeholder="Razón social o nombre")
+                tipo_bien_servicio = st.text_input("Tipo de Bien / Servicio *",
+                                                    placeholder="Ej: Repuestos, Transporte, Lubricantes…")
+                direccion_ciudad = st.text_input("Dirección / Ciudad",
+                                                  placeholder="Ej: Cra 7 # 10-20, Bogotá")
+            with col2:
+                telefono = st.text_input("Teléfono / Celular", placeholder="Ej: 3001234567")
+                contacto = st.text_input("Contacto", placeholder="Nombre de la persona de contacto")
+                correo = st.text_input("Correo Electrónico", placeholder="proveedor@empresa.com")
 
-        col1, col2 = st.columns(2)
+            # ---- Documentos ----
+            st.divider()
+            st.subheader("📄 Documentos Solicitados")
+            st.caption("Marca los documentos que el proveedor ya ha entregado")
 
-        with col1:
-            fecha_op = st.date_input("Fecha de Operación", datetime.now(), key="reg_fecha")
-            placa_selec = st.selectbox("Placa / Unidad", lista_placas if lista_placas else [""], key="reg_placa")
-            conductor_auto = mapa_conductores.get(placa_selec, "")
-            conductor = st.text_input("Conductor Asignado", value=conductor_auto, key="reg_cond")
+            doc_values = {}
+            cols_doc = st.columns(3)
+            for idx, (key, label) in enumerate(DOCUMENTOS.items()):
+                with cols_doc[idx % 3]:
+                    doc_values[key] = 1 if st.checkbox(label, key=f"new_{key}") else 0
 
-        with col2:
-            tipo_carga = st.selectbox("Tipo de Carga", TIPOS_CARGA, key="reg_tipo")
-            unidad = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, key="reg_unidad")
-            cantidad_str = st.text_input(f"Cantidad ({unidad})", key="reg_cantidad", placeholder="Ej: 28.910,00")
-            cantidad = parse_cantidad(cantidad_str) if cantidad_str.strip() else 0.0
-            sacos = st.number_input("Cantidad de Sacos (opcional)", min_value=0, step=1, key="reg_sacos")
+            # Preview índice en tiempo real
+            docs_marcados = sum(doc_values.values())
+            indice_preview = round((docs_marcados / TOTAL_DOCS) * 100, 1)
+            color_p = color_indice(indice_preview)
+            estado_p = estado_texto(indice_preview)
 
-        descripcion = st.text_area("Descripción / Observaciones", key="reg_desc")
+            col_p1, col_p2 = st.columns(2)
+            with col_p1:
+                st.metric("📊 Índice Documental",
+                          f"{indice_preview}%",
+                          help=f"{docs_marcados} de {TOTAL_DOCS} documentos marcados")
+            with col_p2:
+                if indice_preview >= 80:
+                    st.success(f"{color_p} Estado: {estado_p}")
+                elif indice_preview >= 50:
+                    st.warning(f"{color_p} Estado: {estado_p}")
+                else:
+                    st.error(f"{color_p} Estado: {estado_p}")
 
-        st.markdown("#### 📸 Evidencia")
-        archivo_foto = st.file_uploader("Subir foto", type=['png', 'jpg', 'jpeg'], key="reg_file")
+            # ---- Fechas ----
+            st.divider()
+            st.subheader("📅 Fechas de Actualización Documental")
+            col1, col2 = st.columns(2)
+            with col1:
+                ultima_actualizacion = st.date_input("Última Actualización", value=None)
+            with col2:
+                proxima_actualizacion = st.date_input("Próxima Actualización", value=None)
 
-        if st.button("💾 Guardar Registro", type="primary"):
-            if not placa_selec or cantidad <= 0:
-                st.error("⚠️ Faltan datos (Placa o Cantidad).")
-            else:
-                with st.spinner("Guardando..."):
-                    img_bytes = None
-                    fname = None
-                    if archivo_foto:
-                        img_bytes = procesar_imagen(archivo_foto)
-                        fname = archivo_foto.name
+            # ---- Evaluaciones ----
+            st.divider()
+            st.subheader("🔍 Evaluaciones y Control")
 
-                    if db.guardar_operacion(fecha_op, placa_selec, conductor, tipo_carga, unidad, descripcion, sacos, cantidad, cantidad_str, img_bytes, fname):
-                        st.success(f"✅ Operación Guardada: {placa_selec} | {tipo_carga} | {cantidad_str} {unidad}")
-                    else:
-                        st.error("Error al guardar en base de datos.")
-
-    # ============ TAB 2: HISTORIAL ============
-    with tab2:
-        st.markdown("### 🔍 Historial Detallado")
-
-        with st.expander("🛠️ Filtros", expanded=True):
-            c1, c2, c3, c4, c5 = st.columns(5)
-            with c1: f_ini = st.date_input("Inicio", datetime.now() - timedelta(days=15), key="hist_ini")
-            with c2: f_fin = st.date_input("Fin", datetime.now(), key="hist_fin")
-            with c3:
-                df_v = db.obtener_vehiculos_completo()
-                l_placas = ["Todas"] + df_v['placa'].tolist() if not df_v.empty else ["Todas"]
-                f_pla = st.selectbox("Filtrar Placa", l_placas, key="hist_placa")
-            with c4:
-                f_con = st.text_input("Buscar Conductor", key="hist_cond")
-            with c5:
-                f_tipo = st.selectbox("Tipo de Carga", ["Todos"] + TIPOS_CARGA, key="hist_tipo")
-
-        df = db.obtener_historial(f_ini, f_fin, f_pla, f_con, f_tipo)
-
-        if not df.empty:
-            # --- BOTÓN DESCARGAR EXCEL ---
-            st.markdown("#### 📥 Exportar")
-            col_exp1, col_exp2 = st.columns([2, 6])
-            with col_exp1:
-                nombre_informe = st.text_input("Nombre del informe", value="Operaciones_Cartagena", key="excel_nombre")
-            with col_exp2:
-                st.markdown("<br>", unsafe_allow_html=True)
-                excel_bytes = generar_excel(df, titulo=nombre_informe)
-                st.download_button(
-                    label="⬇️ Descargar Excel",
-                    data=excel_bytes,
-                    file_name=f"{nombre_informe}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    type="primary"
+            col1, col2 = st.columns(2)
+            with col1:
+                eval_inicial_fecha = st.date_input("13. Evaluación Inicial — Fecha", value=None)
+                eval_inicial_riesgo = st.selectbox(
+                    "13. Riesgo del Proveedor",
+                    ["", "BAJO", "MEDIO", "ALTO"],
+                    help="Resultado de la evaluación inicial de riesgo"
+                )
+                reevaluacion = st.text_input(
+                    "14. Reevaluación de Proveedores",
+                    placeholder="Fecha o descripción"
+                )
+            with col2:
+                control_visitas = st.text_input(
+                    "15. Control de Visitas",
+                    placeholder="Fecha o descripción — Revisión acuerdos de seguridad"
+                )
+                envio_retroalimentacion = st.text_input(
+                    "16. Envío Retroalimentación",
+                    placeholder="Fecha o descripción"
+                )
+                otros_documentos = st.text_area(
+                    "17. Otros Documentos Proveedores",
+                    placeholder="Describe otros documentos adicionales entregados…",
+                    height=80
                 )
 
             st.divider()
+            submit = st.form_submit_button("💾 Guardar Proveedor", type="primary")
 
-            # --- TABLA ---
-            if 'tipo_carga' not in df.columns:
-                df['tipo_carga'] = ''
-            if 'unidad_medida' not in df.columns:
-                df['unidad_medida'] = 'Toneladas (t)'
-            if 'cantidad_texto' not in df.columns:
-                df['cantidad_texto'] = df['toneladas'].astype(str)
+            if submit:
+                if not nombre.strip():
+                    st.error("⚠️ El nombre del proveedor es obligatorio.")
+                else:
+                    datos = {
+                        'nombre': nombre.strip().upper(),
+                        'tipo_bien_servicio': tipo_bien_servicio,
+                        'direccion_ciudad': direccion_ciudad,
+                        'telefono': telefono,
+                        'contacto': contacto,
+                        'correo': correo,
+                        **doc_values,
+                        'ultima_actualizacion': str(ultima_actualizacion) if ultima_actualizacion else '',
+                        'proxima_actualizacion': str(proxima_actualizacion) if proxima_actualizacion else '',
+                        'eval_inicial_fecha': str(eval_inicial_fecha) if eval_inicial_fecha else '',
+                        'eval_inicial_riesgo': eval_inicial_riesgo,
+                        'reevaluacion': reevaluacion,
+                        'control_visitas': control_visitas,
+                        'envio_retroalimentacion': envio_retroalimentacion,
+                        'otros_documentos': otros_documentos,
+                    }
+                    prov_id = db.guardar_proveedor(datos)
+                    if prov_id:
+                        st.success(
+                            f"✅ Proveedor **{datos['nombre']}** guardado exitosamente  "
+                            f"(ID: {prov_id})  |  Índice Documental: **{indice_preview}%**"
+                        )
+                        st.balloons()
 
-            st.dataframe(
-                df[['id', 'fecha_operacion', 'placa', 'conductor', 'tipo_carga', 'cantidad_texto', 'unidad_medida', 'toneladas', 'descripcion']],
-                use_container_width=True,
-                hide_index=True
-            )
+    # ===========================================================
+    # TAB 2 – LISTA DE PROVEEDORES
+    # ===========================================================
+    with tab2:
+        st.header("📋 Lista de Proveedores")
+
+        if st.button("🔄 Actualizar lista"):
+            st.rerun()
+
+        df = db.obtener_proveedores()
+
+        if df.empty:
+            st.info("No hay proveedores registrados aún. Registra uno en la pestaña ➕.")
+        else:
+            # KPIs
+            indices_all = [calcular_indice(row) for _, row in df.iterrows()]
+            prom_all = sum(indices_all) / len(indices_all) if indices_all else 0
+
+            col1, col2, col3, col4, col5 = st.columns(5)
+            with col1:
+                st.metric("Total Proveedores", len(df))
+            with col2:
+                st.metric("Índice Promedio", f"{prom_all:.1f}%")
+            with col3:
+                st.metric("🔴 Críticos < 50%", sum(1 for i in indices_all if i < 50))
+            with col4:
+                st.metric("🟡 En Proceso", sum(1 for i in indices_all if 50 <= i < 80))
+            with col5:
+                st.metric("🟢 Completos ≥ 80%", sum(1 for i in indices_all if i >= 80))
 
             st.divider()
 
-            # --- VER / EDITAR / ELIMINAR ---
-            st.subheader("✏️ Editar / Ver Detalle")
-            df['label'] = df.apply(lambda x: f"ID {x['id']} | {x['fecha_operacion']} | {x['placa']} | {x.get('tipo_carga', '')} | {x['toneladas']} ton", axis=1)
-            sel = st.selectbox("Seleccionar viaje:", df['label'].tolist(), key="hist_sel")
+            # Tabla resumen
+            df_show = df[['id','nombre','tipo_bien_servicio','direccion_ciudad',
+                           'telefono','contacto','correo']].copy()
+            df_show['% Docs'] = [f"{calcular_indice(r):.1f}%" for _, r in df.iterrows()]
+            df_show['Estado'] = [
+                f"{color_indice(calcular_indice(r))} {estado_texto(calcular_indice(r))}"
+                for _, r in df.iterrows()
+            ]
+            df_show.columns = ['ID','Nombre','Tipo','Dirección','Teléfono','Contacto','Correo','% Docs','Estado']
+            st.dataframe(df_show, use_container_width=True, hide_index=True, height=380)
 
-            if sel:
-                id_s = int(sel.split(" | ")[0].replace("ID ", ""))
-                row = df[df['id'] == id_s].iloc[0]
+            st.divider()
+            st.subheader("🔎 Ver / Editar Proveedor")
 
-                col_izq, col_der = st.columns([1, 1])
+            nombres_opciones = df['nombre'].tolist()
+            prov_nombre = st.selectbox("Selecciona Proveedor", nombres_opciones)
+            row_sel = df[df['nombre'] == prov_nombre].iloc[0]
+            prov_id_sel = int(row_sel['id'])
+            indice_sel = calcular_indice(row_sel)
 
-                with col_izq:
-                    # Foto
-                    if row['nombre_archivo']:
-                        imd = db.obtener_imagen(id_s)
-                        if imd:
-                            st.image(imd, caption=row['nombre_archivo'], use_container_width=True)
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📊 Índice Documental", f"{indice_sel}%")
+            with col2:
+                docs_ok = sum(1 for k in DOCUMENTOS if int(row_sel.get(k, 0)) == 1)
+                st.metric("Docs Entregados", f"{docs_ok} / {TOTAL_DOCS}")
+            with col3:
+                if indice_sel >= 80:
+                    st.success(f"🟢 COMPLETO")
+                elif indice_sel >= 50:
+                    st.warning(f"🟡 EN PROCESO")
+                else:
+                    st.error(f"🔴 CRÍTICO")
+
+            st.markdown("**Estado de Documentos:**")
+            d_cols = st.columns(4)
+            for idx2, (key, label) in enumerate(DOCUMENTOS.items()):
+                with d_cols[idx2 % 4]:
+                    if int(row_sel.get(key, 0)) == 1:
+                        st.success(f"✅ {label}")
                     else:
-                        st.info("Sin foto adjunta")
+                        st.error(f"❌ {label}")
 
-                with col_der:
-                    # Modo edición
-                    editando = st.session_state.editando_id == id_s
+            # Info evaluaciones
+            with st.expander("📋 Ver información completa"):
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.write(f"**Tipo:** {row_sel.get('tipo_bien_servicio','')}")
+                    st.write(f"**Dirección:** {row_sel.get('direccion_ciudad','')}")
+                    st.write(f"**Teléfono:** {row_sel.get('telefono','')}")
+                    st.write(f"**Contacto:** {row_sel.get('contacto','')}")
+                    st.write(f"**Correo:** {row_sel.get('correo','')}")
+                    st.write(f"**Última Actualización:** {row_sel.get('ultima_actualizacion','')}")
+                    st.write(f"**Próxima Actualización:** {row_sel.get('proxima_actualizacion','')}")
+                with c2:
+                    riesgo = row_sel.get('eval_inicial_riesgo','')
+                    color_r = "🔴" if riesgo == "ALTO" else "🟡" if riesgo == "MEDIO" else "🟢" if riesgo == "BAJO" else "⚪"
+                    st.write(f"**13. Evaluación Inicial:** {color_r} {riesgo}")
+                    st.write(f"**13. Fecha Eval. Inicial:** {row_sel.get('eval_inicial_fecha','')}")
+                    st.write(f"**14. Reevaluación:** {row_sel.get('reevaluacion','')}")
+                    st.write(f"**15. Control Visitas:** {row_sel.get('control_visitas','')}")
+                    st.write(f"**16. Retroalimentación:** {row_sel.get('envio_retroalimentacion','')}")
+                    st.write(f"**17. Otros Docs:** {row_sel.get('otros_documentos','')}")
 
-                    if not editando:
-                        # Vista lectura
-                        st.success(f"**Placa:** {row['placa']}")
-                        st.info(f"**Conductor:** {row['conductor']}")
-                        st.write(f"**Tipo de Carga:** {row.get('tipo_carga', 'N/A')}")
-                        st.write(f"**Cantidad:** {row['cantidad_sacos']} sacos")
-                        unidad_actual = row.get('unidad_medida', 'Toneladas (t)')
-                        st.write(f"**Toneladas equiv.:** {row['toneladas']} t" if row['toneladas'] else f"**Cantidad:** {row['cantidad_sacos']} {unidad_actual}")
-                        st.write(f"**Unidad:** {unidad_actual}")
-                        st.write(f"**Descripción:** {row['descripcion']}")
+            # Edición rápida de documentos
+            with st.expander("✏️ Editar documentos del proveedor"):
+                with st.form(f"form_editar_{prov_id_sel}"):
+                    st.markdown(f"**Editando:** {prov_nombre}")
+                    doc_edit = {}
+                    e_cols = st.columns(3)
+                    for idx3, (key, label) in enumerate(DOCUMENTOS.items()):
+                        with e_cols[idx3 % 3]:
+                            current = bool(int(row_sel.get(key, 0)))
+                            doc_edit[key] = 1 if st.checkbox(label, value=current, key=f"edit_{key}_{prov_id_sel}") else 0
 
-                        btn_col1, btn_col2 = st.columns(2)
-                        with btn_col1:
-                            if st.button("✏️ Editar este viaje", key=f"edit_btn_{id_s}"):
-                                st.session_state.editando_id = id_s
-                                st.rerun()
-                        with btn_col2:
-                            if st.button("🗑️ Eliminar", key=f"del_{id_s}"):
-                                db.eliminar_registro(id_s)
-                                st.success("Registro eliminado.")
-                                st.rerun()
-                    else:
-                        # Formulario de edición
-                        st.markdown("#### ✏️ Editando viaje")
+                    col_f1, col_f2 = st.columns(2)
+                    with col_f1:
+                        ult_act_e = st.text_input("Última Actualización", value=str(row_sel.get('ultima_actualizacion','') or ''))
+                    with col_f2:
+                        prox_act_e = st.text_input("Próxima Actualización", value=str(row_sel.get('proxima_actualizacion','') or ''))
 
-                        df_v2 = db.obtener_vehiculos_completo()
-                        placas_edit = df_v2['placa'].tolist() if not df_v2.empty else [row['placa']]
+                    col_r1, col_r2 = st.columns(2)
+                    with col_r1:
+                        riesgo_opciones = ["", "BAJO", "MEDIO", "ALTO"]
+                        riesgo_actual = str(row_sel.get('eval_inicial_riesgo','') or '')
+                        riesgo_idx = riesgo_opciones.index(riesgo_actual) if riesgo_actual in riesgo_opciones else 0
+                        riesgo_e = st.selectbox("Riesgo Proveedor", riesgo_opciones, index=riesgo_idx)
+                        eval_fecha_e = st.text_input("Fecha Evaluación Inicial", value=str(row_sel.get('eval_inicial_fecha','') or ''))
+                    with col_r2:
+                        reeval_e = st.text_input("Reevaluación", value=str(row_sel.get('reevaluacion','') or ''))
+                        visitas_e = st.text_input("Control Visitas", value=str(row_sel.get('control_visitas','') or ''))
 
-                        fecha_edit = st.date_input("Fecha", value=row['fecha_operacion'], key=f"e_fecha_{id_s}")
-                        placa_idx = placas_edit.index(row['placa']) if row['placa'] in placas_edit else 0
-                        placa_edit = st.selectbox("Placa", placas_edit, index=placa_idx, key=f"e_placa_{id_s}")
-                        cond_edit = st.text_input("Conductor", value=row['conductor'] or "", key=f"e_cond_{id_s}")
+                    retro_e = st.text_input("Envío Retroalimentación", value=str(row_sel.get('envio_retroalimentacion','') or ''))
+                    otros_e = st.text_area("Otros Documentos", value=str(row_sel.get('otros_documentos','') or ''))
 
-                        tipo_idx = TIPOS_CARGA.index(row['tipo_carga']) if row.get('tipo_carga') in TIPOS_CARGA else 0
-                        tipo_edit = st.selectbox("Tipo de Carga", TIPOS_CARGA, index=tipo_idx, key=f"e_tipo_{id_s}")
+                    guardar_edit = st.form_submit_button("💾 Guardar Cambios", type="primary")
 
-                        unidad_actual = row.get('unidad_medida', 'Toneladas (t)')
-                        unidad_idx = UNIDADES_MEDIDA.index(unidad_actual) if unidad_actual in UNIDADES_MEDIDA else 0
-                        unidad_edit = st.selectbox("Unidad de Medida", UNIDADES_MEDIDA, index=unidad_idx, key=f"e_unidad_{id_s}")
-
-                        # Valor inicial de cantidad para el campo de edición
-                        try:
-                            unidad_actual = str(row.get('unidad_medida') or 'Toneladas (t)')
-                            factor = CONVERSION_A_TONELADAS.get(unidad_actual)
-                            ton_val = row['toneladas']
-                            sac_val = row['cantidad_sacos']
-                            if factor and ton_val and not pd.isna(ton_val):
-                                val_cantidad = float(ton_val)
-                            elif sac_val and not pd.isna(sac_val):
-                                val_cantidad = float(sac_val)
-                            else:
-                                val_cantidad = 0.0
-                        except:
-                            val_cantidad = 0.0
-
-                        # Usar cantidad_texto guardada si existe
-                        cant_texto_guardado = str(row.get('cantidad_texto') or '') if 'cantidad_texto' in row.index else ''
-
-                        key_cant = f"e_cant_{id_s}"
-                        if key_cant not in st.session_state:
-                            st.session_state[key_cant] = cant_texto_guardado if cant_texto_guardado else str(int(val_cantidad) if val_cantidad == int(val_cantidad) else val_cantidad)
-
-                        cantidad_str_edit = st.text_input(f"Cantidad ({unidad_edit})", key=key_cant, placeholder="Ej: 28.910,00")
-
-                        try:
-                            cantidad_edit = parse_cantidad(cantidad_str_edit) if cantidad_str_edit.strip() else val_cantidad
-                            cantidad_edit = float(cantidad_edit)
-                        except:
-                            cantidad_edit = val_cantidad
-                        sacos_edit = st.number_input("Sacos (opcional)", min_value=0, value=int(row['cantidad_sacos'] or 0), key=f"e_sacos_{id_s}")
-                        desc_edit = st.text_area("Descripción", value=row['descripcion'] or "", key=f"e_desc_{id_s}")
-
-                        btn_g1, btn_g2 = st.columns(2)
-                        with btn_g1:
-                            if st.button("💾 Guardar Cambios", key=f"save_{id_s}", type="primary"):
-                                if db.actualizar_operacion(id_s, fecha_edit, placa_edit, cond_edit, tipo_edit, unidad_edit, desc_edit, sacos_edit, cantidad_edit, cantidad_str_edit):
-                                    st.success("✅ Registro actualizado.")
-                                    st.session_state.editando_id = None
-                                    st.rerun()
-                        with btn_g2:
-                            if st.button("❌ Cancelar", key=f"cancel_{id_s}"):
-                                st.session_state.editando_id = None
-                                st.rerun()
-        else:
-            st.warning("No hay datos con los filtros seleccionados.")
-
-    # ============ TAB 3: VEHÍCULOS ============
-    with tab3:
-        st.subheader("🚛 Configuración de Flota")
-
-        c1, c2 = st.columns([1, 2])
-
-        with c1:
-            with st.form("add_truck"):
-                p_new = st.text_input("Placa").upper()
-                p_con = st.text_input("Conductor Habitual")
-                p_tip = st.selectbox("Tipo", ["Tractomula", "Dobletroque", "Sencillo", "Turbo"])
-
-                if st.form_submit_button("Guardar / Actualizar"):
-                    if p_new:
-                        if db.guardar_vehiculo(p_new, p_tip, p_con):
-                            st.success(f"✅ {p_new} Guardada")
+                    if guardar_edit:
+                        datos_edit = {
+                            'nombre': row_sel['nombre'],
+                            'tipo_bien_servicio': row_sel.get('tipo_bien_servicio',''),
+                            'direccion_ciudad': row_sel.get('direccion_ciudad',''),
+                            'telefono': row_sel.get('telefono',''),
+                            'contacto': row_sel.get('contacto',''),
+                            'correo': row_sel.get('correo',''),
+                            **doc_edit,
+                            'ultima_actualizacion': ult_act_e,
+                            'proxima_actualizacion': prox_act_e,
+                            'eval_inicial_fecha': eval_fecha_e,
+                            'eval_inicial_riesgo': riesgo_e,
+                            'reevaluacion': reeval_e,
+                            'control_visitas': visitas_e,
+                            'envio_retroalimentacion': retro_e,
+                            'otros_documentos': otros_e,
+                        }
+                        if db.actualizar_proveedor(prov_id_sel, datos_edit):
+                            st.success("✅ Proveedor actualizado correctamente")
                             st.rerun()
 
-        with c2:
-            df_v = db.obtener_vehiculos_completo()
-            if not df_v.empty:
-                st.dataframe(df_v, use_container_width=True, hide_index=True)
-                p_del = st.selectbox("Seleccionar para eliminar:", df_v['placa'].tolist(), key="veh_del")
-                if st.button("🗑️ Eliminar Vehículo"):
-                    db.eliminar_vehiculo(p_del)
-                    st.rerun()
+            st.divider()
+            if st.button("🗑️ Eliminar este proveedor", type="secondary"):
+                db.eliminar_proveedor(prov_id_sel)
+                st.success(f"Proveedor {prov_nombre} eliminado.")
+                st.rerun()
+
+    # ===========================================================
+    # TAB 3 – REPORTES Y EXPORTACIÓN
+    # ===========================================================
+    with tab3:
+        st.header("📊 Reportes y Exportación")
+
+        df = db.obtener_proveedores()
+
+        if df.empty:
+            st.info("No hay datos para reportar aún.")
+        else:
+            indices_rep = [calcular_indice(r) for _, r in df.iterrows()]
+            prom_rep = sum(indices_rep) / len(indices_rep) if indices_rep else 0
+
+            # KPIs
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Proveedores", len(df))
+            with col2:
+                st.metric("Índice Promedio", f"{prom_rep:.1f}%")
+            with col3:
+                st.metric("🔴 Críticos", sum(1 for i in indices_rep if i < 50))
+            with col4:
+                st.metric("🟢 Completos", sum(1 for i in indices_rep if i >= 80))
+
+            st.divider()
+
+            # Gráfico 1 – Cumplimiento por proveedor
+            df_chart = df[['nombre']].copy()
+            df_chart['Índice'] = indices_rep
+            df_chart = df_chart.sort_values('Índice', ascending=True)
+
+            fig1 = px.bar(
+                df_chart, x='Índice', y='nombre', orientation='h',
+                title="📊 Índice de Cumplimiento Documental por Proveedor",
+                color='Índice',
+                color_continuous_scale=['#FF4B4B', '#FFC300', '#28B463'],
+                range_color=[0, 100],
+                labels={'Índice': '% Cumplimiento', 'nombre': 'Proveedor'}
+            )
+            fig1.add_vline(x=80, line_dash="dash", line_color="green",
+                           annotation_text="Meta 80%")
+            fig1.add_vline(x=50, line_dash="dash", line_color="orange",
+                           annotation_text="Mínimo 50%")
+            fig1.update_layout(height=max(300, len(df) * 40))
+            st.plotly_chart(fig1, use_container_width=True)
+
+            st.divider()
+
+            # Gráfico 2 – Entrega por tipo de documento
+            doc_labels = list(DOCUMENTOS.values())
+            doc_pcts = []
+            for key in DOCUMENTOS:
+                if key in df.columns:
+                    entregados = int(df[key].sum())
+                    doc_pcts.append(round(entregados / len(df) * 100, 1))
+                else:
+                    doc_pcts.append(0)
+
+            df_docs_chart = pd.DataFrame({'Documento': doc_labels, '% Entrega': doc_pcts})
+            fig2 = px.bar(
+                df_docs_chart, x='% Entrega', y='Documento', orientation='h',
+                title="📄 % de Entrega por Tipo de Documento",
+                color='% Entrega',
+                color_continuous_scale=['#FF4B4B', '#FFC300', '#28B463'],
+                range_color=[0, 100]
+            )
+            fig2.add_vline(x=80, line_dash="dash", line_color="green")
+            fig2.update_layout(height=500)
+            st.plotly_chart(fig2, use_container_width=True)
+
+            st.divider()
+
+            # Gráfico 3 – Distribución de riesgo
+            if 'eval_inicial_riesgo' in df.columns:
+                riesgo_counts = df['eval_inicial_riesgo'].replace('', 'SIN EVALUAR').value_counts().reset_index()
+                riesgo_counts.columns = ['Riesgo', 'Cantidad']
+                fig3 = px.pie(riesgo_counts, values='Cantidad', names='Riesgo',
+                              title="🎯 Distribución de Riesgo de Proveedores",
+                              color='Riesgo',
+                              color_discrete_map={'ALTO': '#FF4B4B', 'MEDIO': '#FFC300',
+                                                  'BAJO': '#28B463', 'SIN EVALUAR': '#AAAAAA'})
+                st.plotly_chart(fig3, use_container_width=True)
+
+            st.divider()
+            st.subheader("📥 Exportar Reporte Completo a Excel")
+            st.markdown("""
+            El archivo Excel incluye **4 hojas detalladas**:
+            - 📋 **Directorio Proveedores** — datos generales de contacto
+            - 📄 **Documentos y Cumplimiento** — estado documental con semáforo por proveedor
+            - 🔍 **Evaluaciones y Control** — evaluación de riesgo, visitas, retroalimentación
+            - 📊 **Informe Ejecutivo** — KPIs, ranking, análisis por documento
+            """)
+
+            if st.button("⚙️ Generar Reporte Excel", type="primary"):
+                with st.spinner("Generando reporte..."):
+                    excel_data = generar_excel_proveedores(df)
+                fecha_excel = datetime.now().strftime('%Y-%m-%d')
+                st.download_button(
+                    label="📥 Descargar Reporte Completo",
+                    data=excel_data,
+                    file_name=f"Gestión_Proveedores_{fecha_excel}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+                st.success("✅ Reporte listo para descargar")
 
 
 if __name__ == "__main__":

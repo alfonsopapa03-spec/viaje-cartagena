@@ -16,7 +16,7 @@ from openpyxl.utils import get_column_letter
 import plotly.express as px
 
 # ==================== CONFIGURACIÓN SUPABASE ====================
-SUPABASE_DB_URL = "postgresql://postgres.wiomyjrmsrhcgvhgkbqe:Conejito800$@aws-1-us-west-2.pooler.supabase.com:6543/postgres"
+SUPABASE_DB_URL = "postgresql://postgres.scjqqcrkjdavetdyxtrf:GV69W?B8v$x4wH?@aws-1-us-east-1.pooler.supabase.com:6543/postgres"
 
 # ==================== HORA COLOMBIA ====================
 def hora_colombia():

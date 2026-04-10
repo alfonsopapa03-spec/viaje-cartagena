@@ -1,6 +1,6 @@
 """
 Sistema de Gestión de Proveedores
-Versión 2.3 - PostgreSQL puro (BD + PDFs en BYTEA)
+Versión 2.4 - PostgreSQL puro (BD + PDFs en BYTEA)
 Contexto: Colombia
 """
 
@@ -17,6 +17,19 @@ import plotly.express as px
 
 # ==================== CONFIGURACIÓN SUPABASE ====================
 SUPABASE_DB_URL = "postgresql://postgres.wiomyjrmsrhcgvhgkbqe:Conejito800$@aws-1-us-west-2.pooler.supabase.com:6543/postgres"
+
+# ==================== HORA COLOMBIA ====================
+def hora_colombia():
+    """Retorna datetime actual en hora Colombia (UTC-5)."""
+    return datetime.utcnow() - timedelta(hours=5)
+
+def fecha_colombia_str():
+    """Retorna fecha y hora actual Colombia como string legible."""
+    hc = hora_colombia()
+    dias_es = ["Lunes","Martes","Miércoles","Jueves","Viernes","Sábado","Domingo"]
+    meses_es = ["enero","febrero","marzo","abril","mayo","junio",
+                "julio","agosto","septiembre","octubre","noviembre","diciembre"]
+    return f"{dias_es[hc.weekday()]}, {hc.day} de {meses_es[hc.month-1]} de {hc.year} — {hc.strftime('%I:%M %p')} (hora Colombia)"
 
 # ==================== LISTA CIUU ====================
 CIUU_OPCIONES = [
@@ -517,7 +530,6 @@ CIUU_OPCIONES = [
     ("9900", "9900 - Actividades de organizaciones y entidades extraterritoriales"),
 ]
 
-# Solo las etiquetas para el selectbox
 CIUU_LABELS = [label for _, label in CIUU_OPCIONES]
 CIUU_CODES  = [code  for code, _ in CIUU_OPCIONES]
 
@@ -553,7 +565,6 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cur = conn.cursor()
-
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS proveedores (
                     id SERIAL PRIMARY KEY,
@@ -590,7 +601,6 @@ class DatabaseManager:
                     otros_documentos TEXT
                 )
             ''')
-
             cur.execute('''
                 CREATE TABLE IF NOT EXISTS documentos_pdf (
                     id SERIAL PRIMARY KEY,
@@ -602,7 +612,6 @@ class DatabaseManager:
                     subido_en TEXT NOT NULL
                 )
             ''')
-
             for col_def in [
                 "ADD COLUMN IF NOT EXISTS tipo_actividad TEXT",
                 "ADD COLUMN IF NOT EXISTS fecha_vinculacion TEXT",
@@ -612,7 +621,6 @@ class DatabaseManager:
                     cur.execute(f"ALTER TABLE proveedores {col_def}")
                 except Exception:
                     pass
-
             conn.commit()
             conn.close()
         except Exception as e:
@@ -622,8 +630,7 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cur = conn.cursor()
-            hora_col = datetime.now() - timedelta(hours=5)
-            fecha_actual = hora_col.strftime('%Y-%m-%d %H:%M:%S')
+            fecha_actual = hora_colombia().strftime('%Y-%m-%d %H:%M:%S')
             cur.execute('''
                 INSERT INTO proveedores (
                     fecha_registro, nit_cedula, nombre, tipo_bien_servicio, tipo_actividad,
@@ -724,8 +731,7 @@ class DatabaseManager:
         try:
             conn = self.get_connection()
             cur = conn.cursor()
-            hora_col = datetime.now() - timedelta(hours=5)
-            subido_en = hora_col.strftime('%Y-%m-%d %H:%M:%S')
+            subido_en = hora_colombia().strftime('%Y-%m-%d %H:%M:%S')
             cur.execute('''
                 INSERT INTO documentos_pdf (proveedor_id, doc_key, filename, filesize, contenido, subido_en)
                 VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
@@ -815,15 +821,12 @@ def _dias_diferencia(fecha_str):
     return (dt - datetime.now()).days
 
 def get_ciuu_index(valor_actual):
-    """Retorna el índice en CIUU_LABELS para el valor guardado."""
     if not valor_actual or str(valor_actual).strip() in ('', 'None', 'nan'):
         return 0
     val = str(valor_actual).strip()
-    # Buscar por etiqueta exacta
     for i, label in enumerate(CIUU_LABELS):
         if label == val:
             return i
-    # Buscar si el valor guardado empieza con el código
     for i, (code, label) in enumerate(CIUU_OPCIONES):
         if val.startswith(code) or label.startswith(val):
             return i
@@ -831,9 +834,7 @@ def get_ciuu_index(valor_actual):
 
 
 # ==================== WIDGET PDF POR DOCUMENTO ====================
-def widget_documento_pdf(db: DatabaseManager, proveedor_id: int,
-                          doc_key: str, doc_label: str,
-                          checked: bool, form_key_prefix: str) -> int:
+def widget_documento_pdf(db, proveedor_id, doc_key, doc_label, checked, form_key_prefix):
     col_chk, col_body = st.columns([1, 9])
     with col_chk:
         entregado = st.checkbox(
@@ -844,7 +845,6 @@ def widget_documento_pdf(db: DatabaseManager, proveedor_id: int,
     with col_body:
         icon = "✅" if entregado else "📄"
         with st.expander(f"{icon}  {doc_label}", expanded=False):
-
             st.markdown("##### 📤 Subir nueva versión")
             uploaded = st.file_uploader(
                 "Selecciona PDF", type=["pdf"],
@@ -859,7 +859,6 @@ def widget_documento_pdf(db: DatabaseManager, proveedor_id: int,
                     if new_id:
                         st.success(f"✅ **{uploaded.name}** guardado ({fmt_bytes(len(contenido))})")
                         st.rerun()
-
             versiones = db.listar_versiones(proveedor_id, doc_key)
             if versiones:
                 st.markdown(f"##### 📂 Historial — {len(versiones)} versión(es)")
@@ -884,7 +883,6 @@ def widget_documento_pdf(db: DatabaseManager, proveedor_id: int,
                             st.rerun()
             else:
                 st.caption("📭 Sin archivos subidos aún")
-
     return 1 if entregado else 0
 
 
@@ -894,17 +892,19 @@ def generar_excel_proveedores(df):
     wb = Workbook()
 
     # ── Estilos compartidos ──────────────────────────────────────────────────
-    h_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    h_font = Font(color="FFFFFF", bold=True, size=11)
-    verde  = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
-    rojo   = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
-    amari  = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
-    azul_c = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
-    gris_c = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
-    borde  = Border(left=Side(style='thin'), right=Side(style='thin'),
-                    top=Side(style='thin'),  bottom=Side(style='thin'))
-    centro = Alignment(horizontal='center', vertical='center')
-    wrap_c = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    h_fill  = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    h_font  = Font(color="FFFFFF", bold=True, size=11, name="Arial")
+    verde   = PatternFill(start_color="C6EFCE", end_color="C6EFCE", fill_type="solid")
+    rojo    = PatternFill(start_color="FFC7CE", end_color="FFC7CE", fill_type="solid")
+    amari   = PatternFill(start_color="FFEB9C", end_color="FFEB9C", fill_type="solid")
+    azul_c  = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
+    gris_c  = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+    borde   = Border(left=Side(style='thin'), right=Side(style='thin'),
+                     top=Side(style='thin'),  bottom=Side(style='thin'))
+    centro  = Alignment(horizontal='center', vertical='center')
+    wrap_c  = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    now_col = hora_colombia()
+    fecha_gen = now_col.strftime('%d/%m/%Y %I:%M %p')
 
     def hdr(ws, row, col, value):
         cell = ws.cell(row=row, column=col, value=value)
@@ -919,15 +919,16 @@ def generar_excel_proveedores(df):
     ws1.title = "Directorio Proveedores"
     ws1.merge_cells('A1:I1')
     ws1['A1'] = "DIRECTORIO DE PROVEEDORES"
-    ws1['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws1['A1'].font = Font(size=15, bold=True, color="1F4E78", name="Arial")
     ws1['A1'].alignment = centro
     ws1.row_dimensions[1].height = 30
     ws1.merge_cells('A2:I2')
-    ws1['A2'] = f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   Total: {len(df)}"
+    ws1['A2'] = f"Generado: {fecha_gen} (hora Colombia)   |   Total: {len(df)}"
     ws1['A2'].alignment = centro
-    ws1['A2'].font = Font(italic=True, color="555555")
-    for c, h in enumerate(['NIT / Cédula', 'Nombre Proveedor', 'Tipo Bien / Servicio', 'Tipo Actividad (CIUU)',
-                            'Dirección / Ciudad', 'Teléfono', 'Contacto', 'Correo', 'Fecha Registro'], 1):
+    ws1['A2'].font = Font(italic=True, color="555555", name="Arial")
+    for c, h in enumerate(['NIT / Cédula', 'Nombre Proveedor', 'Tipo Bien / Servicio',
+                            'Tipo Actividad (CIUU)', 'Dirección / Ciudad', 'Teléfono',
+                            'Contacto', 'Correo', 'Fecha Registro'], 1):
         hdr(ws1, 4, c, h)
     ws1.row_dimensions[4].height = 20
     for r, (_, row) in enumerate(df.iterrows(), 5):
@@ -936,7 +937,7 @@ def generar_excel_proveedores(df):
             cell = ws1.cell(row=r, column=c, value=str(row.get(f, '') or ''))
             cell.border = borde
             cell.fill = azul_c if r % 2 == 0 else PatternFill()
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'], [18, 35, 25, 30, 28, 18, 25, 30, 20]):
+    for col, w in zip(['A','B','C','D','E','F','G','H','I'], [18,35,25,30,28,18,25,30,20]):
         ws1.column_dimensions[col].width = w
 
     # ════════════════════════════════════════════════════════════════════════
@@ -946,7 +947,7 @@ def generar_excel_proveedores(df):
     total_cols = 2 + TOTAL_DOCS + 3
     ws2.merge_cells(f'A1:{get_column_letter(total_cols)}1')
     ws2['A1'] = "ESTADO DOCUMENTAL POR PROVEEDOR"
-    ws2['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws2['A1'].font = Font(size=15, bold=True, color="1F4E78", name="Arial")
     ws2['A1'].alignment = centro
     hdrs2 = (['Proveedor', '% Índice'] + list(DOCUMENTOS.values()) +
              ['Fecha Vinculación', 'Última Actualización', 'Próxima Actualización'])
@@ -956,9 +957,9 @@ def generar_excel_proveedores(df):
     for r, (_, row) in enumerate(df.iterrows(), 4):
         ind = calcular_indice(row)
         c1 = ws2.cell(row=r, column=1, value=str(row.get('nombre', '')))
-        c1.border = borde; c1.font = Font(bold=True)
+        c1.border = borde; c1.font = Font(bold=True, name="Arial")
         c2 = ws2.cell(row=r, column=2, value=f"{ind}%")
-        c2.alignment = centro; c2.border = borde; c2.font = Font(bold=True)
+        c2.alignment = centro; c2.border = borde; c2.font = Font(bold=True, name="Arial")
         c2.fill = verde if ind >= 80 else amari if ind >= 50 else rojo
         for ci, key in enumerate(DOCUMENTOS.keys(), 3):
             val = int(row.get(key) or 0)
@@ -980,7 +981,7 @@ def generar_excel_proveedores(df):
     ws3 = wb.create_sheet("Evaluaciones y Control")
     ws3.merge_cells('A1:G1')
     ws3['A1'] = "EVALUACIONES Y CONTROL DE PROVEEDORES"
-    ws3['A1'].font = Font(size=15, bold=True, color="1F4E78")
+    ws3['A1'].font = Font(size=15, bold=True, color="1F4E78", name="Arial")
     ws3['A1'].alignment = centro
     ws3.row_dimensions[1].height = 30
     for c, h in enumerate(['Proveedor', '13. Nivel de Riesgo', '13. Fecha Eval.',
@@ -991,17 +992,17 @@ def generar_excel_proveedores(df):
     riesgo_color = {'ALTO': rojo, 'MEDIO': amari, 'BAJO': verde}
     for r, (_, row) in enumerate(df.iterrows(), 4):
         riesgo = str(row.get('eval_inicial_riesgo', '') or '')
-        for ci, v in enumerate([row.get('nombre', ''), riesgo,
-                                  row.get('eval_inicial_fecha', ''), row.get('reevaluacion', ''),
-                                  row.get('control_visitas', ''), row.get('envio_retroalimentacion', ''),
-                                  row.get('otros_documentos', '')], 1):
+        for ci, v in enumerate([row.get('nombre',''), riesgo,
+                                  row.get('eval_inicial_fecha',''), row.get('reevaluacion',''),
+                                  row.get('control_visitas',''), row.get('envio_retroalimentacion',''),
+                                  row.get('otros_documentos','')], 1):
             cell = ws3.cell(row=r, column=ci, value=str(v) if v else '')
             cell.border = borde
             if ci == 2 and riesgo in riesgo_color:
                 cell.fill = riesgo_color[riesgo]
-                cell.font = Font(bold=True)
+                cell.font = Font(bold=True, name="Arial")
                 cell.alignment = centro
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G'], [32, 20, 18, 24, 24, 24, 28]):
+    for col, w in zip(['A','B','C','D','E','F','G'], [32,20,18,24,24,24,28]):
         ws3.column_dimensions[col].width = w
 
     # ════════════════════════════════════════════════════════════════════════
@@ -1010,12 +1011,12 @@ def generar_excel_proveedores(df):
     ws4 = wb.create_sheet("Informe Ejecutivo")
     ws4.merge_cells('A1:F1')
     ws4['A1'] = "INFORME EJECUTIVO — GESTIÓN DE PROVEEDORES"
-    ws4['A1'].font = Font(size=16, bold=True, color="FFFFFF")
+    ws4['A1'].font = Font(size=16, bold=True, color="FFFFFF", name="Arial")
     ws4['A1'].fill = h_fill; ws4['A1'].alignment = centro
     ws4.row_dimensions[1].height = 35
     ws4.merge_cells('A2:F2')
-    ws4['A2'] = f"Fecha: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   Total: {len(df)}"
-    ws4['A2'].alignment = centro; ws4['A2'].font = Font(italic=True, color="444444")
+    ws4['A2'] = f"Fecha: {fecha_gen} (hora Colombia)   |   Total: {len(df)}"
+    ws4['A2'].alignment = centro; ws4['A2'].font = Font(italic=True, color="444444", name="Arial")
 
     indices_list  = [calcular_indice(row) for _, row in df.iterrows()]
     prom_indice   = sum(indices_list) / len(indices_list) if indices_list else 0
@@ -1025,7 +1026,7 @@ def generar_excel_proveedores(df):
     pct_completos = round(n_completos / len(df) * 100, 1) if len(df) > 0 else 0
 
     ws4.cell(row=4, column=1).value = "INDICADORES CLAVE DE DESEMPEÑO"
-    ws4.cell(row=4, column=1).font = Font(bold=True, size=12, color="1F4E78")
+    ws4.cell(row=4, column=1).font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws4.merge_cells('A4:F4'); ws4.row_dimensions[4].height = 22
 
     for i, (label, valor, nivel) in enumerate([
@@ -1037,18 +1038,18 @@ def generar_excel_proveedores(df):
         ("% Proveedores Completamente Certificados", f"{pct_completos:.1f}%", pct_completos),
     ], 5):
         cl = ws4.cell(row=i, column=1, value=label)
-        cl.font = Font(bold=True); cl.border = borde
+        cl.font = Font(bold=True, name="Arial"); cl.border = borde
         cl.fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
         ws4.merge_cells(f'A{i}:D{i}')
         cv = ws4.cell(row=i, column=5, value=valor)
-        cv.alignment = centro; cv.border = borde; cv.font = Font(bold=True, size=12)
+        cv.alignment = centro; cv.border = borde; cv.font = Font(bold=True, size=12, name="Arial")
         if nivel is not None:
             cv.fill = verde if nivel >= 80 else amari if nivel >= 50 else rojo
         ws4.merge_cells(f'E{i}:F{i}')
 
     row_rank = 12
     ws4.cell(row=row_rank, column=1).value = "RANKING DE CUMPLIMIENTO"
-    ws4.cell(row=row_rank, column=1).font = Font(bold=True, size=12, color="1F4E78")
+    ws4.cell(row=row_rank, column=1).font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws4.merge_cells(f'A{row_rank}:F{row_rank}')
     for c, h in enumerate(['#', 'Proveedor', 'Tipo Bien', '% Cumplimiento', 'Estado', 'Docs'], 1):
         hdr(ws4, row_rank + 1, c, h)
@@ -1060,20 +1061,20 @@ def generar_excel_proveedores(df):
         ind = row['_idx']
         docs_ok = sum(1 for k in DOCUMENTOS if int(row.get(k) or 0) == 1)
         estado = "✅ COMPLETO" if ind >= 80 else "⚠️ EN PROCESO" if ind >= 50 else "❌ CRÍTICO"
-        for ci, v in enumerate([ri - row_rank - 1, row.get('nombre', ''),
-                                  row.get('tipo_bien_servicio', ''),
+        for ci, v in enumerate([ri - row_rank - 1, row.get('nombre',''),
+                                  row.get('tipo_bien_servicio',''),
                                   f"{ind}%", estado, f"{docs_ok}/{TOTAL_DOCS}"], 1):
             cell = ws4.cell(row=ri, column=ci, value=v)
             cell.border = borde
             if ci == 4:
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
                 cell.fill = verde if ind >= 80 else amari if ind >= 50 else rojo
             elif ci == 5:
                 cell.alignment = centro
 
     row_doc = row_rank + len(df_rk) + 4
     ws4.cell(row=row_doc, column=1).value = "ANÁLISIS DE ENTREGA POR DOCUMENTO"
-    ws4.cell(row=row_doc, column=1).font = Font(bold=True, size=12, color="1F4E78")
+    ws4.cell(row=row_doc, column=1).font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws4.merge_cells(f'A{row_doc}:F{row_doc}')
     for c, h in enumerate(['Documento', 'Con Doc.', 'Total', '% Entrega', 'Faltantes'], 1):
         hdr(ws4, row_doc + 1, c, h)
@@ -1085,9 +1086,9 @@ def generar_excel_proveedores(df):
             cell = ws4.cell(row=di, column=ci, value=v)
             cell.border = borde
             if ci == 4:
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
                 cell.fill = verde if pct_doc >= 80 else amari if pct_doc >= 50 else rojo
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F'], [38, 22, 18, 16, 18, 18]):
+    for col, w in zip(['A','B','C','D','E','F'], [38,22,18,16,18,18]):
         ws4.column_dimensions[col].width = w
 
     # ════════════════════════════════════════════════════════════════════════
@@ -1098,30 +1099,28 @@ def generar_excel_proveedores(df):
 
     ws5.merge_cells('A1:H1')
     ws5['A1'] = "TRAZABILIDAD DE ACTUALIZACIONES"
-    ws5['A1'].font = Font(size=15, bold=True, color="FFFFFF")
-    ws5['A1'].fill = h_fill
-    ws5['A1'].alignment = centro
+    ws5['A1'].font = Font(size=15, bold=True, color="FFFFFF", name="Arial")
+    ws5['A1'].fill = h_fill; ws5['A1'].alignment = centro
     ws5.row_dimensions[1].height = 32
 
     ws5.merge_cells('A2:H2')
-    ws5['A2'] = (f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   "
-                 f"Total proveedores: {total_prov}")
+    ws5['A2'] = f"Generado: {fecha_gen} (hora Colombia)   |   Total proveedores: {total_prov}"
     ws5['A2'].alignment = centro
-    ws5['A2'].font = Font(italic=True, color="444444")
+    ws5['A2'].font = Font(italic=True, color="444444", name="Arial")
 
     ws5.merge_cells('A4:H4')
     ws5['A4'] = "▌ RESUMEN EJECUTIVO DE ACTUALIZACIONES"
-    ws5['A4'].font = Font(bold=True, size=12, color="1F4E78")
+    ws5['A4'].font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws5['A4'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     ws5.row_dimensions[4].height = 22
 
     n_al_dia, n_por_vencer, n_vencidos, n_sin_fecha = 0, 0, 0, 0
     for _, row in df.iterrows():
         dias = _dias_diferencia(row.get('proxima_actualizacion', ''))
-        if dias is None:          n_sin_fecha  += 1
-        elif dias > 30:           n_al_dia     += 1
-        elif dias >= 0:           n_por_vencer += 1
-        else:                     n_vencidos   += 1
+        if dias is None:      n_sin_fecha  += 1
+        elif dias > 30:       n_al_dia     += 1
+        elif dias >= 0:       n_por_vencer += 1
+        else:                 n_vencidos   += 1
 
     pct_al_dia     = round(n_al_dia     / total_prov * 100, 1) if total_prov else 0
     pct_por_vencer = round(n_por_vencer / total_prov * 100, 1) if total_prov else 0
@@ -1131,262 +1130,354 @@ def generar_excel_proveedores(df):
     for c, h in enumerate(['Estado', 'N° Proveedores', '% del Total', 'Barra Visual'], 1):
         hdr(ws5, 5, c, h)
 
-    resumen_rows = [
+    for ri, (estado, cantidad, pct, fill) in enumerate([
         ("🟢 Al día (próxima actualización > 30 días)",     n_al_dia,     pct_al_dia,     verde),
         ("🟡 Por vencer (próxima actualización ≤ 30 días)", n_por_vencer, pct_por_vencer, amari),
         ("🔴 Vencidos (fecha ya pasó)",                     n_vencidos,   pct_vencidos,   rojo),
         ("⚪ Sin fecha registrada",                          n_sin_fecha,  pct_sin_fecha,  gris_c),
-    ]
-    for ri, (estado, cantidad, pct, fill) in enumerate(resumen_rows, 6):
+    ], 6):
         barra = "■" * int(pct / 5) + "□" * (20 - int(pct / 5))
         for ci, v in enumerate([estado, cantidad, f"{pct}%", barra], 1):
             cell = ws5.cell(row=ri, column=ci, value=v)
             cell.border = borde; cell.fill = fill
             if ci in (2, 3):
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
 
     for ci, v in enumerate(["TOTAL", total_prov, "100%", ""], 1):
         cell = ws5.cell(row=10, column=ci, value=v)
-        cell.font = Font(bold=True, color="FFFFFF")
+        cell.font = Font(bold=True, color="FFFFFF", name="Arial")
         cell.fill = h_fill; cell.alignment = centro; cell.border = borde
 
     ws5.merge_cells('A12:H12')
     ws5['A12'] = "▌ DETALLE POR PROVEEDOR"
-    ws5['A12'].font = Font(bold=True, size=12, color="1F4E78")
+    ws5['A12'].font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws5['A12'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     ws5.row_dimensions[12].height = 22
 
-    det_hdrs = ['Proveedor', 'Última Actualización', 'Próxima Actualización',
-                'Días para Vencer', 'Estado Vigencia', '% Docs Entregados',
-                'N° Actualizaciones', 'Observación']
-    for c, h in enumerate(det_hdrs, 1):
+    for c, h in enumerate(['Proveedor','Última Actualización','Próxima Actualización',
+                            'Días para Vencer','Estado Vigencia','% Docs Entregados',
+                            'N° Actualizaciones','Observación'], 1):
         hdr(ws5, 13, c, h)
     ws5.row_dimensions[13].height = 45
 
     for r, (_, row) in enumerate(df.iterrows(), 14):
-        nombre   = str(row.get('nombre', '') or '')
-        ult_act  = str(row.get('ultima_actualizacion', '') or '').strip()
-        prox_act = str(row.get('proxima_actualizacion', '') or '').strip()
+        nombre   = str(row.get('nombre','') or '')
+        ult_act  = str(row.get('ultima_actualizacion','') or '').strip()
+        prox_act = str(row.get('proxima_actualizacion','') or '').strip()
         indice   = calcular_indice(row)
         dias     = _dias_diferencia(prox_act)
-        tiene_ult = ult_act not in ('', 'None', 'nan')
+        tiene_ult = ult_act not in ('','None','nan')
         n_act     = 1 if tiene_ult else 0
 
-        if dias is None:
-            estado_vig = "⚪ Sin fecha";          fill_est = gris_c
-        elif dias > 30:
-            estado_vig = "🟢 Al día";             fill_est = verde
-        elif dias >= 0:
-            estado_vig = f"🟡 Vence en {dias}d";  fill_est = amari
-        else:
-            estado_vig = f"🔴 Vencido ({abs(dias)}d)"; fill_est = rojo
+        if dias is None:    estado_vig = "⚪ Sin fecha";            fill_est = gris_c
+        elif dias > 30:     estado_vig = "🟢 Al día";               fill_est = verde
+        elif dias >= 0:     estado_vig = f"🟡 Vence en {dias}d";    fill_est = amari
+        else:               estado_vig = f"🔴 Vencido ({abs(dias)}d)"; fill_est = rojo
 
-        if dias is None:
-            obs = "Sin fechas — requiere ingreso"
-        elif dias < 0:
-            obs = f"Vencido hace {abs(dias)} días — actualización urgente"
-        elif dias <= 30:
-            obs = f"Vence en {dias} días — programar actualización"
-        else:
-            obs = "Vigente"
+        if dias is None:    obs = "Sin fechas — requiere ingreso"
+        elif dias < 0:      obs = f"Vencido hace {abs(dias)} días — actualización urgente"
+        elif dias <= 30:    obs = f"Vence en {dias} días — programar actualización"
+        else:               obs = "Vigente"
 
-        vals = [
-            nombre,
-            ult_act  if tiene_ult                           else "—",
-            prox_act if prox_act not in ('', 'None', 'nan') else "—",
-            dias     if dias is not None                    else "—",
-            estado_vig,
-            f"{indice}%",
-            n_act,
-            obs,
-        ]
+        vals = [nombre,
+                ult_act  if tiene_ult else "—",
+                prox_act if prox_act not in ('','None','nan') else "—",
+                dias     if dias is not None else "—",
+                estado_vig, f"{indice}%", n_act, obs]
         for c, v in enumerate(vals, 1):
             cell = ws5.cell(row=r, column=c, value=v)
             cell.border = borde
             if c == 4 and isinstance(v, int):
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
                 cell.fill = verde if v > 30 else amari if v >= 0 else rojo
             elif c == 5:
-                cell.fill = fill_est; cell.alignment = centro; cell.font = Font(bold=True)
+                cell.fill = fill_est; cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
             elif c == 6:
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
                 cell.fill = verde if indice >= 80 else amari if indice >= 50 else rojo
             elif c == 7:
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
                 cell.fill = verde if n_act >= 1 else rojo
-            elif r % 2 == 0 and c not in (4, 5, 6, 7):
+            elif r % 2 == 0 and c not in (4,5,6,7):
                 cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 
     sep = 13 + len(df) + 2
     ws5.merge_cells(f'A{sep}:H{sep}')
     ws5[f'A{sep}'] = "▌ ESTADÍSTICAS GENERALES"
-    ws5[f'A{sep}'].font = Font(bold=True, size=12, color="1F4E78")
+    ws5[f'A{sep}'].font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws5[f'A{sep}'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     ws5.row_dimensions[sep].height = 22
 
     tiene_ultima  = sum(1 for _, r in df.iterrows()
-                        if str(r.get('ultima_actualizacion', '') or '').strip()
-                        not in ('', 'None', 'nan'))
+                        if str(r.get('ultima_actualizacion','') or '').strip() not in ('','None','nan'))
     tiene_proxima = sum(1 for _, r in df.iterrows()
-                        if str(r.get('proxima_actualizacion', '') or '').strip()
-                        not in ('', 'None', 'nan'))
+                        if str(r.get('proxima_actualizacion','') or '').strip() not in ('','None','nan'))
     pct_ult  = round(tiene_ultima  / total_prov * 100, 1) if total_prov else 0
     pct_prox = round(tiene_proxima / total_prov * 100, 1) if total_prov else 0
 
-    for c, h in enumerate(['Indicador', 'Cantidad', '% del Total', 'Observación'], 1):
+    for c, h in enumerate(['Indicador','Cantidad','% del Total','Observación'], 1):
         hdr(ws5, sep + 1, c, h)
 
-    stats = [
-        ("Proveedores con Última Actualización registrada",
-         tiene_ultima, pct_ult,
-         "Registro histórico presente" if pct_ult == 100 else "Faltan registros"),
-        ("Proveedores con Próxima Actualización programada",
-         tiene_proxima, pct_prox,
-         "Seguimiento programado" if pct_prox == 100 else "Sin programar"),
-        ("Proveedores actualizados al menos 1 vez",
-         tiene_ultima, pct_ult,
-         "≥ 1 actualización documentada"),
-        ("Total actualizaciones registradas en el sistema",
-         tiene_ultima, "—",
-         "Suma de todas las actualizaciones únicas"),
-    ]
-    for ri, (ind, cant, pct, obs) in enumerate(stats, sep + 2):
-        for ci, v in enumerate([ind, cant, f"{pct}%" if isinstance(pct, float) else pct, obs], 1):
+    for ri, (ind2, cant, pct, obs2) in enumerate([
+        ("Proveedores con Última Actualización registrada",    tiene_ultima,  pct_ult,  "Registro histórico presente" if pct_ult == 100 else "Faltan registros"),
+        ("Proveedores con Próxima Actualización programada",   tiene_proxima, pct_prox, "Seguimiento programado" if pct_prox == 100 else "Sin programar"),
+        ("Proveedores actualizados al menos 1 vez",            tiene_ultima,  pct_ult,  "≥ 1 actualización documentada"),
+        ("Total actualizaciones registradas en el sistema",    tiene_ultima,  "—",      "Suma de todas las actualizaciones únicas"),
+    ], sep + 2):
+        for ci, v in enumerate([ind2, cant, f"{pct}%" if isinstance(pct, float) else pct, obs2], 1):
             cell = ws5.cell(row=ri, column=ci, value=v)
             cell.border = borde
             if ci == 3 and isinstance(pct, float):
-                cell.alignment = centro; cell.font = Font(bold=True)
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
                 cell.fill = verde if pct >= 80 else amari if pct >= 50 else rojo
             if ri % 2 == 0 and ci != 3:
                 cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
 
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'],
-                      [38, 22, 22, 18, 22, 20, 20, 42]):
+    for col, w in zip(['A','B','C','D','E','F','G','H'], [38,22,22,18,22,20,20,42]):
         ws5.column_dimensions[col].width = w
 
     # ════════════════════════════════════════════════════════════════════════
-    # Hoja 6 – Análisis por Tipo de Actividad (CIUU)  ← NUEVA
+    # Hoja 6 – Análisis por Actividad CIUU  ← MEJORADA
     # ════════════════════════════════════════════════════════════════════════
     ws6 = wb.create_sheet("Análisis por Actividad CIUU")
 
-    ws6.merge_cells('A1:G1')
-    ws6['A1'] = "ANÁLISIS DE CUMPLIMIENTO POR TIPO DE ACTIVIDAD (CIUU)"
-    ws6['A1'].font = Font(size=15, bold=True, color="FFFFFF")
+    # Encabezado principal
+    ws6.merge_cells('A1:I1')
+    ws6['A1'] = "ANÁLISIS DE PROVEEDORES POR ACTIVIDAD ECONÓMICA (CIUU)"
+    ws6['A1'].font = Font(size=15, bold=True, color="FFFFFF", name="Arial")
     ws6['A1'].fill = h_fill
     ws6['A1'].alignment = centro
     ws6.row_dimensions[1].height = 32
 
-    ws6.merge_cells('A2:G2')
-    ws6['A2'] = (f"Generado: {datetime.now().strftime('%d/%m/%Y %H:%M')}   |   "
-                 f"Total proveedores: {len(df)}")
+    ws6.merge_cells('A2:I2')
+    ws6['A2'] = f"Generado: {fecha_gen} (hora Colombia)   |   Total proveedores: {len(df)}"
     ws6['A2'].alignment = centro
-    ws6['A2'].font = Font(italic=True, color="444444")
+    ws6['A2'].font = Font(italic=True, color="444444", name="Arial")
 
-    # ── Bloque A: Resumen por tipo de actividad ─────────────────────────────
-    ws6.merge_cells('A4:G4')
-    ws6['A4'] = "▌ PORCENTAJE DE CUMPLIMIENTO DOCUMENTAL POR TIPO DE ACTIVIDAD"
-    ws6['A4'].font = Font(bold=True, size=12, color="1F4E78")
-    ws6['A4'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
-    ws6.row_dimensions[4].height = 22
-
-    for c, h in enumerate(['Tipo de Actividad (CIUU)', 'N° Proveedores',
-                            '% Prom. Cumplimiento', 'Completos (≥80%)',
-                            'En Proceso (50-79%)', 'Críticos (<50%)', 'Estado General'], 1):
-        hdr(ws6, 5, c, h)
-    ws6.row_dimensions[5].height = 40
-
-    # Agrupar proveedores por tipo_actividad
+    # ── Preparar datos de actividades ───────────────────────────────────────
     df_act = df.copy()
     df_act['_indice'] = [calcular_indice(r) for _, r in df_act.iterrows()]
-    df_act['_actividad'] = df_act['tipo_actividad'].fillna('').replace('', 'Sin Actividad Registrada')
+    df_act['_actividad'] = (df_act['tipo_actividad']
+                            .fillna('').replace('', 'Sin Actividad Registrada')
+                            .apply(lambda x: x if x.strip() else 'Sin Actividad Registrada'))
 
     grupos = df_act.groupby('_actividad')
-
     actividades_data = []
     for actividad, grupo in grupos:
-        n_prov       = len(grupo)
-        indices_g    = grupo['_indice'].tolist()
-        prom_g       = round(sum(indices_g) / n_prov, 1) if n_prov > 0 else 0
-        n_comp_g     = sum(1 for i in indices_g if i >= 80)
-        n_proc_g     = sum(1 for i in indices_g if 50 <= i < 80)
-        n_crit_g     = sum(1 for i in indices_g if i < 50)
-        actividades_data.append((actividad, n_prov, prom_g, n_comp_g, n_proc_g, n_crit_g))
+        n_prov    = len(grupo)
+        indices_g = grupo['_indice'].tolist()
+        prom_g    = round(sum(indices_g) / n_prov, 1) if n_prov > 0 else 0
+        n_comp_g  = sum(1 for i in indices_g if i >= 80)
+        n_proc_g  = sum(1 for i in indices_g if 50 <= i < 80)
+        n_crit_g  = sum(1 for i in indices_g if i < 50)
+        pct_sobre_total = round(n_prov / len(df) * 100, 1) if len(df) > 0 else 0
+        actividades_data.append((actividad, n_prov, prom_g, n_comp_g, n_proc_g, n_crit_g, pct_sobre_total))
 
-    # Ordenar por promedio descendente
-    actividades_data.sort(key=lambda x: x[2], reverse=True)
+    actividades_data.sort(key=lambda x: x[1], reverse=True)  # ordenar por cantidad
+    n_actividades = len(actividades_data)
 
-    for ri, (act, n_prov, prom_g, n_comp_g, n_proc_g, n_crit_g) in enumerate(actividades_data, 6):
-        estado_g = "✅ BUENO" if prom_g >= 80 else "⚠️ REGULAR" if prom_g >= 50 else "❌ CRÍTICO"
-        fill_g   = verde if prom_g >= 80 else amari if prom_g >= 50 else rojo
-        vals = [act, n_prov, f"{prom_g}%", n_comp_g, n_proc_g, n_crit_g, estado_g]
+    # ── BLOQUE A: Resumen cuantitativo ───────────────────────────────────────
+    ws6.merge_cells('A4:I4')
+    ws6['A4'] = f"▌ RESUMEN — {n_actividades} ACTIVIDADES ECONÓMICAS REGISTRADAS"
+    ws6['A4'].font = Font(bold=True, size=13, color="1F4E78", name="Arial")
+    ws6['A4'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
+    ws6.row_dimensions[4].height = 24
+
+    # Métricas rápidas fila 5
+    metricas = [
+        ("Total actividades CIUU distintas", n_actividades),
+        ("Total proveedores", len(df)),
+        ("Actividad más frecuente", actividades_data[0][0][:40] if actividades_data else "—"),
+        ("Mayor cantidad", actividades_data[0][1] if actividades_data else 0),
+    ]
+    fill_met = PatternFill(start_color="EBF5FB", end_color="EBF5FB", fill_type="solid")
+    for ci, (lbl, val) in enumerate(metricas, 1):
+        cl = ws6.cell(row=5, column=ci * 2 - 1, value=lbl)
+        cl.font = Font(bold=True, size=9, color="1F4E78", name="Arial")
+        cl.fill = fill_met; cl.border = borde; cl.alignment = centro
+        cv = ws6.cell(row=5, column=ci * 2, value=val)
+        cv.font = Font(bold=True, size=11, name="Arial")
+        cv.fill = fill_met; cv.border = borde; cv.alignment = centro
+    ws6.row_dimensions[5].height = 30
+
+    # ── BLOQUE B: Gráfico circular simulado (tabla con % visual) ────────────
+    row_pie = 7
+    ws6.merge_cells(f'A{row_pie}:I{row_pie}')
+    ws6[f'A{row_pie}'] = "▌ DISTRIBUCIÓN PORCENTUAL POR ACTIVIDAD ECONÓMICA (% DE PROVEEDORES)"
+    ws6[f'A{row_pie}'].font = Font(bold=True, size=12, color="1F4E78", name="Arial")
+    ws6[f'A{row_pie}'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
+    ws6.row_dimensions[row_pie].height = 22
+
+    # Colores para simular gráfico de torta
+    colores_torta = [
+        "4472C4","ED7D31","A9D18E","FF0000","FFC000","00B0F0",
+        "7030A0","00B050","FF7C80","92D050","0070C0","FFFF00",
+        "FF6699","C55A11","375623","833C00","1F3864","843C0C",
+    ]
+
+    for c, h in enumerate(['#', 'Actividad Económica (CIUU)', 'N° Proveedores',
+                            '% del Total', 'Barra Visual (por cantidad)',
+                            '% Cumpl. Prom.', 'Completos', 'En Proceso', 'Críticos'], 1):
+        hdr(ws6, row_pie + 1, c, h)
+    ws6.row_dimensions[row_pie + 1].height = 40
+
+    for ri, (act, n_prov, prom_g, n_comp_g, n_proc_g, n_crit_g, pct_total) in enumerate(actividades_data, row_pie + 2):
+        color_hex = colores_torta[(ri - row_pie - 2) % len(colores_torta)]
+        barra_len = max(1, int(pct_total / 2))
+        barra_vis = "█" * barra_len + "░" * (50 - barra_len)
+
+        rank_num = ri - row_pie - 1
+        fill_row = PatternFill(start_color=color_hex + "33",
+                               end_color=color_hex + "33", fill_type="solid") \
+                   if len(color_hex) == 6 else gris_c
+
+        vals = [rank_num, act, n_prov, f"{pct_total}%", barra_vis,
+                f"{prom_g}%", n_comp_g, n_proc_g, n_crit_g]
         for ci, v in enumerate(vals, 1):
             cell = ws6.cell(row=ri, column=ci, value=v)
             cell.border = borde
-            if ci == 3:
-                cell.alignment = centro; cell.font = Font(bold=True)
-                cell.fill = fill_g
-            elif ci == 7:
-                cell.alignment = centro; cell.font = Font(bold=True)
-                cell.fill = fill_g
-            elif ci in (2, 4, 5, 6):
+            if ci == 1:
                 cell.alignment = centro
-            if ri % 2 == 0 and ci not in (3, 7):
-                cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
+                cell.fill = PatternFill(start_color=color_hex, end_color=color_hex, fill_type="solid")
+                cell.font = Font(bold=True, color="FFFFFF", name="Arial")
+            elif ci == 3:
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
+                cell.fill = fill_row
+            elif ci == 4:
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
+                cell.fill = fill_row
+            elif ci == 5:
+                cell.font = Font(name="Courier New", size=9, color=color_hex)
+            elif ci == 6:
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial")
+                cell.fill = verde if prom_g >= 80 else amari if prom_g >= 50 else rojo
+            elif ci in (7, 8, 9):
+                cell.alignment = centro
+                cell.fill = fill_row
+            else:
+                cell.fill = fill_row
 
     # Fila total
-    row_tot = 6 + len(actividades_data)
-    for ci, v in enumerate(["TOTAL GENERAL", len(df),
-                             f"{round(sum(i[2]*i[1] for i in actividades_data)/len(df),1) if len(df)>0 else 0}%",
-                             sum(i[3] for i in actividades_data),
-                             sum(i[4] for i in actividades_data),
-                             sum(i[5] for i in actividades_data), ""], 1):
-        cell = ws6.cell(row=row_tot, column=ci, value=v)
-        cell.font = Font(bold=True, color="FFFFFF")
+    row_tot_pie = row_pie + 2 + n_actividades
+    for ci, v in enumerate(["", "TOTAL GENERAL", len(df), "100%", "",
+                             f"{round(sum(a[2]*a[1] for a in actividades_data)/len(df),1) if len(df)>0 else 0}%",
+                             sum(a[3] for a in actividades_data),
+                             sum(a[4] for a in actividades_data),
+                             sum(a[5] for a in actividades_data)], 1):
+        cell = ws6.cell(row=row_tot_pie, column=ci, value=v)
+        cell.font = Font(bold=True, color="FFFFFF", name="Arial")
         cell.fill = h_fill; cell.alignment = centro; cell.border = borde
 
-    # ── Bloque B: Detalle individual por proveedor agrupado por actividad ───
-    row_det = row_tot + 2
-    ws6.merge_cells(f'A{row_det}:G{row_det}')
-    ws6[f'A{row_det}'] = "▌ DETALLE INDIVIDUAL POR PROVEEDOR Y ACTIVIDAD"
-    ws6[f'A{row_det}'].font = Font(bold=True, size=12, color="1F4E78")
+    # ── BLOQUE C: Ranking por cumplimiento documental ───────────────────────
+    row_rank = row_tot_pie + 2
+    ws6.merge_cells(f'A{row_rank}:I{row_rank}')
+    ws6[f'A{row_rank}'] = "▌ RANKING DE ACTIVIDADES ECONÓMICAS POR CUMPLIMIENTO DOCUMENTAL"
+    ws6[f'A{row_rank}'].font = Font(bold=True, size=12, color="1F4E78", name="Arial")
+    ws6[f'A{row_rank}'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
+    ws6.row_dimensions[row_rank].height = 22
+
+    for c, h in enumerate(['Posición', 'Actividad Económica (CIUU)', 'N° Proveedores',
+                            '% Cumpl. Promedio', 'Estado', 'Completos',
+                            'En Proceso', 'Críticos', 'Barra Cumplimiento'], 1):
+        hdr(ws6, row_rank + 1, c, h)
+    ws6.row_dimensions[row_rank + 1].height = 40
+
+    # Ordenar por cumplimiento promedio para el ranking
+    ranking_data = sorted(actividades_data, key=lambda x: x[2], reverse=True)
+    medallas = {1: "🥇", 2: "🥈", 3: "🥉"}
+
+    for ri, (act, n_prov, prom_g, n_comp_g, n_proc_g, n_crit_g, pct_total) in enumerate(ranking_data, 1):
+        row_excel = row_rank + 1 + ri
+        estado_g  = "✅ BUENO"   if prom_g >= 80 else "⚠️ REGULAR" if prom_g >= 50 else "❌ CRÍTICO"
+        fill_g    = verde if prom_g >= 80 else amari if prom_g >= 50 else rojo
+        medalla   = medallas.get(ri, str(ri))
+        barra_c   = "█" * int(prom_g / 5) + "░" * (20 - int(prom_g / 5))
+
+        vals = [medalla, act, n_prov, f"{prom_g}%", estado_g,
+                n_comp_g, n_proc_g, n_crit_g, barra_c]
+        for ci, v in enumerate(vals, 1):
+            cell = ws6.cell(row=row_excel, column=ci, value=v)
+            cell.border = borde
+            if ci == 1:
+                cell.alignment = centro; cell.font = Font(bold=True, size=12, name="Arial")
+                if ri <= 3:
+                    cell.fill = PatternFill(start_color="FFD700" if ri==1 else "C0C0C0" if ri==2 else "CD7F32",
+                                            end_color="FFD700" if ri==1 else "C0C0C0" if ri==2 else "CD7F32",
+                                            fill_type="solid")
+            elif ci == 4:
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial"); cell.fill = fill_g
+            elif ci == 5:
+                cell.alignment = centro; cell.font = Font(bold=True, name="Arial"); cell.fill = fill_g
+            elif ci in (6, 7, 8):
+                cell.alignment = centro
+                if ri % 2 == 0: cell.fill = gris_c
+            elif ci == 9:
+                cell.font = Font(name="Courier New", size=9)
+                cell.fill = fill_g
+            else:
+                if ri % 2 == 0: cell.fill = gris_c
+
+    # ── BLOQUE D: Detalle individual por proveedor agrupado por actividad ───
+    row_det = row_rank + 1 + len(ranking_data) + 3
+    ws6.merge_cells(f'A{row_det}:I{row_det}')
+    ws6[f'A{row_det}'] = "▌ DETALLE INDIVIDUAL DE PROVEEDORES POR ACTIVIDAD ECONÓMICA"
+    ws6[f'A{row_det}'].font = Font(bold=True, size=12, color="1F4E78", name="Arial")
     ws6[f'A{row_det}'].fill = PatternFill(start_color="DDEEFF", end_color="DDEEFF", fill_type="solid")
     ws6.row_dimensions[row_det].height = 22
 
-    for c, h in enumerate(['Tipo de Actividad (CIUU)', 'NIT / Cédula', 'Nombre Proveedor',
-                            '% Cumplimiento', 'Docs Entregados', 'Estado', 'Nivel de Riesgo'], 1):
+    for c, h in enumerate(['Actividad Económica (CIUU)', 'NIT / Cédula', 'Nombre Proveedor',
+                            '% Cumplimiento', 'Docs Entregados', 'Estado',
+                            'Nivel de Riesgo', 'Últ. Actualización', 'Próx. Actualización'], 1):
         hdr(ws6, row_det + 1, c, h)
+    ws6.row_dimensions[row_det + 1].height = 40
 
     row_cur = row_det + 2
-    for act, _, _, _, _, _ in actividades_data:
+    # Usar orden de ranking (mayor cumplimiento primero)
+    for act, _, _, _, _, _, _ in ranking_data:
         grupo = df_act[df_act['_actividad'] == act]
         grupo_sorted = grupo.sort_values('_indice', ascending=False)
+
+        # Subencabezado de actividad
+        ws6.merge_cells(f'A{row_cur}:I{row_cur}')
+        cell_sub = ws6.cell(row=row_cur, column=1, value=f"  ► {act}")
+        cell_sub.font = Font(bold=True, color="FFFFFF", name="Arial", size=10)
+        cell_sub.fill = PatternFill(start_color="2E75B6", end_color="2E75B6", fill_type="solid")
+        cell_sub.border = borde
+        ws6.row_dimensions[row_cur].height = 18
+        row_cur += 1
+
         for _, prow in grupo_sorted.iterrows():
             ind_p    = prow['_indice']
             docs_ok  = sum(1 for k in DOCUMENTOS if int(prow.get(k) or 0) == 1)
             estado_p = "✅ COMPLETO" if ind_p >= 80 else "⚠️ EN PROCESO" if ind_p >= 50 else "❌ CRÍTICO"
             fill_p   = verde if ind_p >= 80 else amari if ind_p >= 50 else rojo
-            riesgo_p = str(prow.get('eval_inicial_riesgo', '') or '')
-            fill_r   = rojo if riesgo_p == 'ALTO' else amari if riesgo_p == 'MEDIO' else verde if riesgo_p == 'BAJO' else gris_c
+            riesgo_p = str(prow.get('eval_inicial_riesgo','') or '')
+            fill_r   = rojo if riesgo_p=='ALTO' else amari if riesgo_p=='MEDIO' else verde if riesgo_p=='BAJO' else gris_c
+            ult_a    = str(prow.get('ultima_actualizacion','') or '')
+            prox_a   = str(prow.get('proxima_actualizacion','') or '')
 
-            vals = [act, str(prow.get('nit_cedula', '') or ''), str(prow.get('nombre', '') or ''),
-                    f"{ind_p}%", f"{docs_ok}/{TOTAL_DOCS}", estado_p, riesgo_p if riesgo_p else '—']
+            vals = [act, str(prow.get('nit_cedula','') or ''), str(prow.get('nombre','') or ''),
+                    f"{ind_p}%", f"{docs_ok}/{TOTAL_DOCS}", estado_p,
+                    riesgo_p if riesgo_p else '—', ult_a if ult_a not in ('','None','nan') else '—',
+                    prox_a   if prox_a  not in ('','None','nan') else '—']
             for ci, v in enumerate(vals, 1):
                 cell = ws6.cell(row=row_cur, column=ci, value=v)
                 cell.border = borde
                 if ci == 4:
-                    cell.alignment = centro; cell.font = Font(bold=True); cell.fill = fill_p
+                    cell.alignment = centro; cell.font = Font(bold=True, name="Arial"); cell.fill = fill_p
                 elif ci == 5:
                     cell.alignment = centro
                 elif ci == 6:
-                    cell.alignment = centro; cell.font = Font(bold=True); cell.fill = fill_p
+                    cell.alignment = centro; cell.font = Font(bold=True, name="Arial"); cell.fill = fill_p
                 elif ci == 7:
-                    cell.alignment = centro; cell.font = Font(bold=True); cell.fill = fill_r
-                elif row_cur % 2 == 0 and ci not in (4, 6, 7):
+                    cell.alignment = centro; cell.font = Font(bold=True, name="Arial"); cell.fill = fill_r
+                elif row_cur % 2 == 0 and ci not in (4,6,7):
                     cell.fill = PatternFill(start_color="F2F2F2", end_color="F2F2F2", fill_type="solid")
             row_cur += 1
 
-    for col, w in zip(['A', 'B', 'C', 'D', 'E', 'F', 'G'],
-                      [40, 18, 35, 18, 16, 16, 16]):
+    # Anchos de columna
+    for col, w in zip(['A','B','C','D','E','F','G','H','I'],
+                      [42, 18, 35, 18, 16, 16, 16, 22, 22]):
         ws6.column_dimensions[col].width = w
 
     wb.save(output)
@@ -1399,6 +1490,9 @@ def main():
     st.set_page_config(page_title="Gestión de Proveedores", layout="wide", page_icon="🏢")
     st.title("🏢 Sistema de Gestión de Proveedores")
     st.markdown("**Control Documental, Evaluación y Trazabilidad de Proveedores**")
+
+    # ── Fecha y hora Colombia visible en el header ──────────────────────────
+    st.info(f"🕐 **{fecha_colombia_str()}**", icon=None)
 
     if 'db' not in st.session_state:
         with st.spinner("Conectando a la base de datos..."):
@@ -1425,25 +1519,16 @@ def main():
                 nombre             = st.text_input("Nombre del Proveedor *", placeholder="Razón social")
                 tipo_bien_servicio = st.text_input("Tipo de Bien / Servicio *",
                                                     placeholder="Ej: Repuestos, Transporte…")
-                tipo_actividad     = st.selectbox(
-                    "Tipo de Actividad (CIUU)",
-                    options=CIUU_LABELS,
-                    index=0,
-                )
+                tipo_actividad     = st.selectbox("Tipo de Actividad (CIUU)", options=CIUU_LABELS, index=0)
             with col2:
-                direccion_ciudad = st.text_input("Dirección / Ciudad",
-                                                  placeholder="Ej: Cra 7 # 10-20, Bogotá")
+                direccion_ciudad = st.text_input("Dirección / Ciudad", placeholder="Ej: Cra 7 # 10-20, Bogotá")
                 telefono = st.text_input("Teléfono / Celular")
                 contacto = st.text_input("Contacto")
                 correo   = st.text_input("Correo Electrónico")
 
             st.divider()
             st.subheader("📄 Documentos Solicitados")
-            st.info(
-                "💡 Marca los documentos recibidos. "
-                "Para subir los PDFs, guarda primero el proveedor y luego edítalo desde la lista.",
-                icon="ℹ️",
-            )
+            st.info("💡 Marca los documentos recibidos. Para subir los PDFs, guarda primero el proveedor y luego edítalo desde la lista.", icon="ℹ️")
             doc_values = {}
             cols_doc = st.columns(3)
             for idx, (key, label) in enumerate(DOCUMENTOS.items()):
@@ -1464,9 +1549,9 @@ def main():
             st.divider()
             st.subheader("📅 Fechas")
             cf1, cf2, cf3 = st.columns(3)
-            with cf1: fecha_vinculacion    = st.date_input("📎 Fecha de Vinculación",   value=None)
-            with cf2: ultima_actualizacion  = st.date_input("🔄 Última Actualización",   value=None)
-            with cf3: proxima_actualizacion = st.date_input("⏭️ Próxima Actualización",  value=None)
+            with cf1: fecha_vinculacion    = st.date_input("📎 Fecha de Vinculación",  value=None)
+            with cf2: ultima_actualizacion  = st.date_input("🔄 Última Actualización",  value=None)
+            with cf3: proxima_actualizacion = st.date_input("⏭️ Próxima Actualización", value=None)
 
             st.divider()
             st.subheader("🔍 Evaluaciones y Control")
@@ -1540,15 +1625,15 @@ def main():
 
             st.divider()
 
-            df_show = df[['id', 'nit_cedula', 'nombre', 'tipo_bien_servicio', 'tipo_actividad',
-                           'direccion_ciudad', 'telefono', 'contacto', 'correo']].copy()
+            df_show = df[['id','nit_cedula','nombre','tipo_bien_servicio','tipo_actividad',
+                           'direccion_ciudad','telefono','contacto','correo']].copy()
             df_show['% Docs'] = [f"{calcular_indice(r):.1f}%" for _, r in df.iterrows()]
             df_show['Estado'] = [
                 f"{color_indice(calcular_indice(r))} {estado_texto(calcular_indice(r))}"
                 for _, r in df.iterrows()
             ]
-            df_show.columns = ['ID', 'NIT/Cédula', 'Nombre', 'Tipo', 'Actividad', 'Dirección',
-                                'Teléfono', 'Contacto', 'Correo', '% Docs', 'Estado']
+            df_show.columns = ['ID','NIT/Cédula','Nombre','Tipo','Actividad','Dirección',
+                                'Teléfono','Contacto','Correo','% Docs','Estado']
             st.dataframe(df_show, use_container_width=True, hide_index=True, height=360)
 
             st.divider()
@@ -1583,8 +1668,8 @@ def main():
                     st.write(f"**Última Actualización:** {row_sel.get('ultima_actualizacion','')}")
                     st.write(f"**Próxima Actualización:** {row_sel.get('proxima_actualizacion','')}")
                 with ic2:
-                    riesgo  = row_sel.get('eval_inicial_riesgo', '')
-                    color_r = "🔴" if riesgo == "ALTO" else "🟡" if riesgo == "MEDIO" else "🟢" if riesgo == "BAJO" else "⚪"
+                    riesgo  = row_sel.get('eval_inicial_riesgo','')
+                    color_r = "🔴" if riesgo=="ALTO" else "🟡" if riesgo=="MEDIO" else "🟢" if riesgo=="BAJO" else "⚪"
                     st.write(f"**Nivel de Riesgo:** {color_r} {riesgo}")
                     st.write(f"**Fecha Eval.:** {row_sel.get('eval_inicial_fecha','')}")
                     st.write(f"**Reevaluación:** {row_sel.get('reevaluacion','')}")
@@ -1594,21 +1679,14 @@ def main():
 
             with st.expander("✏️ Editar documentos y subir PDFs"):
                 st.markdown(f"### Editando: **{prov_nombre}**")
-                st.caption(
-                    "Marca ✔ los documentos entregados · "
-                    "Sube el PDF de cada uno · "
-                    "Descarga o elimina versiones anteriores"
-                )
+                st.caption("Marca ✔ los documentos entregados · Sube el PDF de cada uno · Descarga o elimina versiones anteriores")
 
                 doc_edit = {}
                 for key, label in DOCUMENTOS.items():
                     current = bool(int(row_sel.get(key) or 0))
                     doc_edit[key] = widget_documento_pdf(
-                        db=db,
-                        proveedor_id=prov_id_sel,
-                        doc_key=key,
-                        doc_label=label,
-                        checked=current,
+                        db=db, proveedor_id=prov_id_sel, doc_key=key,
+                        doc_label=label, checked=current,
                         form_key_prefix=f"e{prov_id_sel}",
                     )
 
@@ -1616,50 +1694,42 @@ def main():
                 st.markdown("**📅 Actualizar fechas y datos generales**")
 
                 with st.form(f"form_meta_{prov_id_sel}"):
-                    # NIT y tipo actividad
                     fn1, fn2 = st.columns(2)
                     with fn1:
-                        nit_e = st.text_input("NIT / Cédula",
-                                              value=str(row_sel.get('nit_cedula', '') or ''))
+                        nit_e = st.text_input("NIT / Cédula", value=str(row_sel.get('nit_cedula','') or ''))
                     with fn2:
-                        ciuu_idx_actual = get_ciuu_index(str(row_sel.get('tipo_actividad', '') or ''))
-                        tipo_act_e = st.selectbox(
-                            "Tipo de Actividad (CIUU)",
-                            options=CIUU_LABELS,
-                            index=ciuu_idx_actual,
-                        )
+                        ciuu_idx_actual = get_ciuu_index(str(row_sel.get('tipo_actividad','') or ''))
+                        tipo_act_e = st.selectbox("Tipo de Actividad (CIUU)", options=CIUU_LABELS, index=ciuu_idx_actual)
 
                     ff1, ff2, ff3 = st.columns(3)
-                    with ff1: vinc_e     = st.text_input("Fecha Vinculación",     value=str(row_sel.get('fecha_vinculacion', '') or ''))
-                    with ff2: ult_act_e  = st.text_input("Última Actualización",  value=str(row_sel.get('ultima_actualizacion', '') or ''))
-                    with ff3: prox_act_e = st.text_input("Próxima Actualización", value=str(row_sel.get('proxima_actualizacion', '') or ''))
+                    with ff1: vinc_e     = st.text_input("Fecha Vinculación",     value=str(row_sel.get('fecha_vinculacion','') or ''))
+                    with ff2: ult_act_e  = st.text_input("Última Actualización",  value=str(row_sel.get('ultima_actualizacion','') or ''))
+                    with ff3: prox_act_e = st.text_input("Próxima Actualización", value=str(row_sel.get('proxima_actualizacion','') or ''))
 
                     fr1, fr2 = st.columns(2)
                     with fr1:
-                        riesgo_ops = ["", "BAJO", "MEDIO", "ALTO"]
-                        riesgo_act = str(row_sel.get('eval_inicial_riesgo', '') or '')
+                        riesgo_ops = ["","BAJO","MEDIO","ALTO"]
+                        riesgo_act = str(row_sel.get('eval_inicial_riesgo','') or '')
                         riesgo_e   = st.selectbox("Nivel de Riesgo", riesgo_ops,
-                                                   index=riesgo_ops.index(riesgo_act)
-                                                   if riesgo_act in riesgo_ops else 0)
-                        eval_fech_e = st.text_input("Fecha Eval. Inicial",
-                                                     value=str(row_sel.get('eval_inicial_fecha', '') or ''))
+                                                   index=riesgo_ops.index(riesgo_act) if riesgo_act in riesgo_ops else 0)
+                        eval_fech_e = st.text_input("Fecha Eval. Inicial", value=str(row_sel.get('eval_inicial_fecha','') or ''))
                     with fr2:
-                        reeval_e  = st.text_input("Reevaluación",    value=str(row_sel.get('reevaluacion', '') or ''))
-                        visitas_e = st.text_input("Control Visitas", value=str(row_sel.get('control_visitas', '') or ''))
+                        reeval_e  = st.text_input("Reevaluación",    value=str(row_sel.get('reevaluacion','') or ''))
+                        visitas_e = st.text_input("Control Visitas", value=str(row_sel.get('control_visitas','') or ''))
 
-                    retro_e = st.text_input("Retroalimentación", value=str(row_sel.get('envio_retroalimentacion', '') or ''))
-                    otros_e = st.text_area("Otros Documentos",   value=str(row_sel.get('otros_documentos', '') or ''))
+                    retro_e = st.text_input("Retroalimentación", value=str(row_sel.get('envio_retroalimentacion','') or ''))
+                    otros_e = st.text_area("Otros Documentos",   value=str(row_sel.get('otros_documentos','') or ''))
 
                     if st.form_submit_button("💾 Guardar Cambios", type="primary"):
                         datos_edit = {
                             'nit_cedula':         nit_e,
                             'nombre':             row_sel['nombre'],
-                            'tipo_bien_servicio': row_sel.get('tipo_bien_servicio', ''),
+                            'tipo_bien_servicio': row_sel.get('tipo_bien_servicio',''),
                             'tipo_actividad':     tipo_act_e if tipo_act_e != CIUU_LABELS[0] else '',
-                            'direccion_ciudad':   row_sel.get('direccion_ciudad', ''),
-                            'telefono':           row_sel.get('telefono', ''),
-                            'contacto':           row_sel.get('contacto', ''),
-                            'correo':             row_sel.get('correo', ''),
+                            'direccion_ciudad':   row_sel.get('direccion_ciudad',''),
+                            'telefono':           row_sel.get('telefono',''),
+                            'contacto':           row_sel.get('contacto',''),
+                            'correo':             row_sel.get('correo',''),
                             **doc_edit,
                             'fecha_vinculacion':     vinc_e,
                             'ultima_actualizacion':  ult_act_e,
@@ -1683,10 +1753,7 @@ def main():
                 st.session_state.confirmar_eliminar = prov_id_sel
 
             if st.session_state.get('confirmar_eliminar') == prov_id_sel:
-                st.warning(
-                    f"⚠️ ¿Seguro que deseas eliminar **{prov_nombre}**? "
-                    f"Se eliminarán también todos sus PDFs guardados."
-                )
+                st.warning(f"⚠️ ¿Seguro que deseas eliminar **{prov_nombre}**? Se eliminarán también todos sus PDFs guardados.")
                 bc1, bc2 = st.columns(2)
                 with bc1:
                     if st.button("✅ Sí, eliminar", type="primary"):
@@ -1726,9 +1793,9 @@ def main():
             fig1 = px.bar(df_chart, x='Índice', y='nombre', orientation='h',
                           title="📊 Índice de Cumplimiento por Proveedor",
                           color='Índice',
-                          color_continuous_scale=['#FF4B4B', '#FFC300', '#28B463'],
-                          range_color=[0, 100],
-                          labels={'Índice': '% Cumplimiento', 'nombre': 'Proveedor'})
+                          color_continuous_scale=['#FF4B4B','#FFC300','#28B463'],
+                          range_color=[0,100],
+                          labels={'Índice':'% Cumplimiento','nombre':'Proveedor'})
             fig1.add_vline(x=80, line_dash="dash", line_color="green",  annotation_text="Meta 80%")
             fig1.add_vline(x=50, line_dash="dash", line_color="orange", annotation_text="Mínimo 50%")
             fig1.update_layout(height=max(300, len(df) * 40))
@@ -1736,25 +1803,57 @@ def main():
 
             st.divider()
 
-            # Gráfico por tipo de actividad
+            # Gráfico circular por actividad CIUU
             df_act_chart = df.copy()
             df_act_chart['_indice'] = indices_rep
-            df_act_chart['_actividad'] = df_act_chart['tipo_actividad'].fillna('').replace('', 'Sin Actividad')
-            # Tomar solo el código CIUU (primeros caracteres antes del " - ")
-            df_act_chart['_actividad_corta'] = df_act_chart['_actividad'].apply(
-                lambda x: x.split(' - ')[0] if ' - ' in x else x
+            df_act_chart['_actividad'] = df_act_chart['tipo_actividad'].fillna('').replace('','Sin Actividad')
+            df_act_chart['_actividad'] = df_act_chart['_actividad'].apply(
+                lambda x: x if x.strip() else 'Sin Actividad'
             )
-            act_grp = df_act_chart.groupby('_actividad_corta')['_indice'].mean().reset_index()
-            act_grp.columns = ['Actividad CIUU', '% Promedio']
-            act_grp = act_grp.sort_values('% Promedio', ascending=True)
-            fig_act = px.bar(act_grp, x='% Promedio', y='Actividad CIUU', orientation='h',
+            # Etiqueta corta para el pie
+            df_act_chart['_act_corta'] = df_act_chart['_actividad'].apply(
+                lambda x: (x.split(' - ')[0] + ' - ' + ' '.join(x.split(' - ')[1].split()[:4]) + '…') if ' - ' in x else x
+            )
+
+            act_count = df_act_chart.groupby('_act_corta').size().reset_index(name='Cantidad')
+            fig_pie = px.pie(
+                act_count,
+                values='Cantidad',
+                names='_act_corta',
+                title=f"🥧 Distribución de Proveedores por Actividad Económica CIUU ({len(act_count)} actividades)",
+                hole=0.3,
+            )
+            fig_pie.update_traces(textposition='inside', textinfo='percent+label')
+            fig_pie.update_layout(height=600, showlegend=True)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+            # Tabla resumen actividades
+            st.subheader(f"📋 Registro de Actividades Económicas — {len(act_count)} distintas")
+            act_grp_full = df_act_chart.groupby('_actividad').agg(
+                Cantidad=('_indice','count'),
+                Cumpl_Prom=('_indice','mean')
+            ).reset_index()
+            act_grp_full.columns = ['Actividad CIUU', 'N° Proveedores', '% Cumpl. Prom.']
+            act_grp_full['% Cumpl. Prom.'] = act_grp_full['% Cumpl. Prom.'].round(1)
+            act_grp_full['% del Total'] = (act_grp_full['N° Proveedores'] / len(df) * 100).round(1)
+            act_grp_full = act_grp_full.sort_values('N° Proveedores', ascending=False).reset_index(drop=True)
+            act_grp_full.index = act_grp_full.index + 1
+            st.dataframe(act_grp_full, use_container_width=True, height=300)
+
+            st.divider()
+
+            # Gráfico por actividad — cumplimiento promedio
+            act_grp2 = df_act_chart.groupby('_act_corta')['_indice'].mean().reset_index()
+            act_grp2.columns = ['Actividad CIUU', '% Promedio']
+            act_grp2 = act_grp2.sort_values('% Promedio', ascending=True)
+            fig_act = px.bar(act_grp2, x='% Promedio', y='Actividad CIUU', orientation='h',
                              title="📂 % Promedio de Cumplimiento por Tipo de Actividad CIUU",
                              color='% Promedio',
-                             color_continuous_scale=['#FF4B4B', '#FFC300', '#28B463'],
-                             range_color=[0, 100],
-                             labels={'% Promedio': '% Cumplimiento Promedio'})
+                             color_continuous_scale=['#FF4B4B','#FFC300','#28B463'],
+                             range_color=[0,100],
+                             labels={'% Promedio':'% Cumplimiento Promedio'})
             fig_act.add_vline(x=80, line_dash="dash", line_color="green", annotation_text="Meta 80%")
-            fig_act.update_layout(height=max(300, len(act_grp) * 45))
+            fig_act.update_layout(height=max(300, len(act_grp2) * 45))
             st.plotly_chart(fig_act, use_container_width=True)
 
             st.divider()
@@ -1767,8 +1866,8 @@ def main():
                 x='% Entrega', y='Documento', orientation='h',
                 title="📄 % de Entrega por Tipo de Documento",
                 color='% Entrega',
-                color_continuous_scale=['#FF4B4B', '#FFC300', '#28B463'],
-                range_color=[0, 100],
+                color_continuous_scale=['#FF4B4B','#FFC300','#28B463'],
+                range_color=[0,100],
             )
             fig2.add_vline(x=80, line_dash="dash", line_color="green")
             fig2.update_layout(height=500)
@@ -1776,13 +1875,13 @@ def main():
 
             st.divider()
             if 'eval_inicial_riesgo' in df.columns:
-                rc = df['eval_inicial_riesgo'].replace('', 'SIN EVALUAR').value_counts().reset_index()
-                rc.columns = ['Riesgo', 'Cantidad']
-                fig3 = px.pie(rc, values='Cantidad', names='Riesgo',
+                rc2_ = df['eval_inicial_riesgo'].replace('','SIN EVALUAR').value_counts().reset_index()
+                rc2_.columns = ['Riesgo','Cantidad']
+                fig3 = px.pie(rc2_, values='Cantidad', names='Riesgo',
                               title="🎯 Distribución de Nivel de Riesgo",
                               color='Riesgo',
-                              color_discrete_map={'ALTO': '#FF4B4B', 'MEDIO': '#FFC300',
-                                                  'BAJO': '#28B463', 'SIN EVALUAR': '#AAAAAA'})
+                              color_discrete_map={'ALTO':'#FF4B4B','MEDIO':'#FFC300',
+                                                  'BAJO':'#28B463','SIN EVALUAR':'#AAAAAA'})
                 st.plotly_chart(fig3, use_container_width=True)
 
             st.divider()
@@ -1790,7 +1889,7 @@ def main():
             st.markdown(
                 "6 hojas: **Directorio** · **Documentos y Cumplimiento** · "
                 "**Evaluaciones** · **Informe Ejecutivo** · **Trazabilidad Actualizaciones** · "
-                "**Análisis por Actividad CIUU**"
+                "**Análisis por Actividad CIUU** (distribución %, ranking y detalle)"
             )
             if st.button("⚙️ Generar Reporte Excel", type="primary"):
                 with st.spinner("Generando..."):
@@ -1798,7 +1897,7 @@ def main():
                 st.download_button(
                     label="📥 Descargar Reporte",
                     data=excel_data,
-                    file_name=f"Gestión_Proveedores_{datetime.now().strftime('%Y-%m-%d')}.xlsx",
+                    file_name=f"Gestión_Proveedores_{hora_colombia().strftime('%Y-%m-%d')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
                 st.success("✅ Listo para descargar")
